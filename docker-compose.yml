@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/src:/app/src
+    environment:
+      - ENVIRONMENT=development
+      # For FastAPI hot-reloading
+      - WATCHFILES_FORCE_POLLING=true
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/tailwind.config.js:/app/tailwind.config.js
+      - ./frontend/postcss.config.mjs:/app/postcss.config.mjs
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
