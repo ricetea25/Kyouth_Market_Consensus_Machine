@@ -1,8 +1,17 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .database import init_db
 
-app = FastAPI(title="Sentinel Consensus API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Run database initialization
+    init_db()
+    yield
+    # Shutdown: Code here runs when the server stops (optional)
+
+# Initialize FastAPI with the lifespan handler
+app = FastAPI(title="Sentinel Consensus API", lifespan=lifespan)
 
 # Allow the Next.js frontend to talk to the backend
 app.add_middleware(
@@ -12,11 +21,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-@app.on_event("startup")
-def on_startup():
-    # This will create consensus.db and the tables when the server starts
-    init_db()
 
 @app.get("/health")
 def health_check():
