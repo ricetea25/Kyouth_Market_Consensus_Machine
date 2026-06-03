@@ -10,7 +10,7 @@ services:
     environment:
       - ENVIRONMENT=development
       - WATCHFILES_FORCE_POLLING=true
-      - MOCK_EXTERNAL_APIs=true          # <-- Turn the mock OFF so we hit the real APIs
+      - MOCK_EXTERNAL_APIs=true        # <-- Turn the mock OFF so we hit the real APIs
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY}
 
