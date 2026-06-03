@@ -9,8 +9,10 @@ services:
       - ./backend/src:/app/src
     environment:
       - ENVIRONMENT=development
-      # For FastAPI hot-reloading
       - WATCHFILES_FORCE_POLLING=true
+      - MOCK_EXTERNAL_APIs=false           # <-- Turn the mock OFF so we hit the real APIs
+      - GEMINI_API_KEY=AQ.Ab8RN6JzLfkRQ6ynXuFSxiCyGR4aPmYq7C4Wu2ovHBmcwnx_cg
+      - ALPHA_VANTAGE_API_KEY=0HU9Y8FF6OTW3436
 
   frontend:
     build:

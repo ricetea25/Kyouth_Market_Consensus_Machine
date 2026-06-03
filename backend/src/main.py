@@ -57,7 +57,7 @@ async def get_ticker_consensus(symbol: str, session: Session = Depends(get_sessi
         
         age = now_utc - fetched_at
         
-        if age < timedelta(hours=4):
+        if age < timedelta(hours=24):
             return cached_result
         
         # STRATEGY: Instead of deleting, pass the stale object to your pipeline 
