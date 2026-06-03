@@ -33,9 +33,13 @@ async def run_market_pipeline(
             "ticker": clean_ticker,
             "aggregate_sentiment": "STRONG BULLISH",
             "average_sentiment_score": 0.92,
+            "consensus_risk_level": "LOW",
+
+            "accounting_perspective": "[MOCK] Fundamentals show steady cash generation and low leverage.",
+            "market_psychology_perspective": "[MOCK] Public streams show high accumulation waves and social euphoria.",
+            
             "the_bull_case": "Fundamentals show low debt and low P/E, while active news cycles show heavy retail accumulation.",
             "the_bear_case": "Extremely high social buzz could signal a short-term overbought peak.",
-            "consensus_risk_level": "LOW",
             "raw_source_meta": [{"source": "Mock Dual Fundamentals & News Engine"}],
             "fetched_at": datetime.now(timezone.utc)
         }

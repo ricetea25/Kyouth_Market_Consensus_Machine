@@ -8,6 +8,12 @@ class MarketAnalysis(BaseModel):
     average_sentiment_score: float = Field(
         description="A normalized score from 0.0 (completely bearish) to 1.0 (completely bullish)."
     )
+    accounting_perspective: str = Field(
+        description="A concise summary detailing balance sheet health, valuation, debt, margins, and earnings quality based on the raw metrics."
+    )
+    market_psychology_perspective: str = Field(
+        description="A concise summary detailing the current public narrative, news buzz, institutional accumulation trends, and market psychology."
+    )
     the_bull_case: str = Field(
         description="A highly concise summary of the primary positive catalysts, growth vectors, and bullish arguments."
     )

@@ -7,6 +7,8 @@ class StockConsensus(SQLModel, table=True):
     ticker: str = Field(index=True, unique=True)
     aggregate_sentiment: str
     average_sentiment_score: float
+    accounting_perspective: str
+    market_psychology_perspective: str
     the_bull_case: str
     the_bear_case: str
     consensus_risk_level: str
