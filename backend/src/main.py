@@ -38,6 +38,12 @@ app.add_middleware(
 def health_check():
     return {"status": "online", "system": "Kyouth Market Consensus Machine"}
 
+@app.get("/history", response_model=list[StockConsensus])
+def get_analysis_history(session: Session = Depends(get_session)):
+    # Pulls all records from the DB, ordered by the most recently fetched
+    statement = select(StockConsensus).order_by(StockConsensus.fetched_at.desc())
+    return session.exec(statement).all()
+
 
 @app.get("/ticker/{symbol}", response_model=StockConsensus)
 async def get_ticker_consensus(symbol: str, session: Session = Depends(get_session)):
