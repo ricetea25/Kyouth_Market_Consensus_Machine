@@ -7,6 +7,10 @@ const nextConfig: NextConfig = {
         source: '/api/v1/:path*',
         destination: 'http://localhost:8000/:path*',
       },
+      {
+        source: '/api/yf/:path*',
+        destination: 'https://query1.finance.yahoo.com/:path*',
+      },
     ];
   },
 };

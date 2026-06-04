@@ -1,559 +1,735 @@
-import React from "react";
-import Link from "next/link";
-import { redirect } from "next/navigation";
+"use client";
 
-async function getHistory() {
+import { useState } from "react";
+import Image from "next/image";
+import {
+  ComposedChart,
+  Line,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  ReferenceLine,
+} from "recharts";
+
+const SUPPORTED_TICKERS: Record<string, string> = {
+  "AAPL": "Apple",
+  "AMZN": "Amazon",
+  "GOOGL": "Google",
+  "MSFT": "Microsoft",
+  "NVDA": "Nvidia",
+  "TSLA": "Tesla",
+  "META": "Meta",
+  "NFLX": "Netflix",
+};
+
+interface StockConsensus {
+  id: number;
+  ticker: string;
+  aggregate_sentiment: string;
+  average_sentiment_score: number;
+  accounting_perspective: string;
+  market_psychology_perspective: string;
+  the_bull_case: string;
+  the_bear_case: string;
+  consensus_risk_level: string;
+  key_news_sources: string[];
+  raw_source_meta: Record<string, unknown>[];
+  fetched_at: string;
+}
+
+interface NormalisedConsensus {
+  ticker: string;
+  company_name: string;
+  overall_sentiment: "bullish" | "bearish" | "neutral";
+  confidence_score: number;
+  bull_case: string[];
+  bear_case: string[];
+  risk_rating: "low" | "medium" | "high";
+  accounting_perspective: string;
+  market_psychology_perspective: string;
+  key_news_sources: string[];
+}
+
+interface PricePoint {
+  date: string;
+  price: number;
+  volume: number;
+  change: number;
+}
+
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+function normaliseSentiment(s: string): "bullish" | "bearish" | "neutral" {
+  const lower = s.toLowerCase();
+  if (lower.includes("bullish")) return "bullish";
+  if (lower.includes("bearish")) return "bearish";
+  return "neutral";
+}
+
+function normaliseRisk(r: string): "low" | "medium" | "high" {
+  const lower = r.toLowerCase();
+  if (lower === "low") return "low";
+  if (lower === "high") return "high";
+  return "medium";
+}
+
+function splitIntoBullets(text: string): string[] {
+  return text
+    .split(/\.\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 10)
+    .map((s) => (s.endsWith(".") ? s : s + "."));
+}
+
+function extractDomain(url: string): string {
   try {
-    const res = await fetch("http://backend:8000/history", { cache: "no-store" });
-    if (!res.ok) return [];
-    return await res.json();
-  } catch (error) {
-    console.error("Failed to fetch history:", error);
+    const hostname = new URL(url).hostname;
+    return hostname.replace("www.", "");
+  } catch {
+    return url;
+  }
+}
+
+function normalise(raw: StockConsensus, companyName: string): NormalisedConsensus {
+  return {
+    ticker: raw.ticker,
+    company_name: companyName,
+    overall_sentiment: normaliseSentiment(raw.aggregate_sentiment),
+    confidence_score: raw.average_sentiment_score,
+    bull_case: splitIntoBullets(raw.the_bull_case),
+    bear_case: splitIntoBullets(raw.the_bear_case),
+    risk_rating: normaliseRisk(raw.consensus_risk_level),
+    accounting_perspective: raw.accounting_perspective,
+    market_psychology_perspective: raw.market_psychology_perspective,
+    key_news_sources: raw.key_news_sources || [],
+  };
+}
+
+// Fetches 30-day daily OHLCV data from Yahoo Finance (public, no key needed)
+async function fetchPriceHistory(symbol: string): Promise<PricePoint[]> {
+  try {
+    const end = Math.floor(Date.now() / 1000);
+    const start = end - 60 * 60 * 24 * 90; // 90 days back
+    const url = `/api/yf/v8/finance/chart/${symbol}?interval=1d&period1=${start}&period2=${end}`;
+    // Use a CORS proxy since Yahoo blocks direct browser requests
+    const res = await fetch(url);
+    const data = await res.json();
+    const result = data?.chart?.result?.[0];
+    if (!result) return [];
+
+    const timestamps: number[] = result.timestamp;
+    const closes: number[] = result.indicators.quote[0].close;
+    const volumes: number[] = result.indicators.quote[0].volume;
+
+    return timestamps.map((ts, i) => {
+      const price = closes[i] ?? 0;
+      const prev = closes[i - 1] ?? price;
+      return {
+        date: new Date(ts * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+        price: parseFloat(price.toFixed(2)),
+        volume: Math.round((volumes[i] ?? 0) / 1_000_000), // millions
+        change: parseFloat(((price - prev) / prev * 100).toFixed(2)),
+      };
+    }).filter(p => p.price > 0);
+  } catch {
     return [];
   }
 }
 
-function scoreToColor(score: number): string {
-  if (score > 0.3)  return "#10b981";
-  if (score > 0.1)  return "#34d399";
-  if (score > -0.1) return "#9ca3af";
-  if (score > -0.3) return "#f87171";
-  return "#ef4444";
+// ─── Custom Tooltip ──────────────────────────────────────────────────────────
+
+function ChartTooltip({ active, payload, label }: {
+  active?: boolean;
+  payload?: Array<{ name: string; value: number; color: string }>;
+  label?: string;
+}) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-[#0f140f] border border-gray-700 rounded-xl p-3 shadow-2xl text-xs">
+      <p className="text-gray-400 font-semibold mb-2">{label}</p>
+      {payload.map((entry, i) => (
+        <div key={i} className="flex items-center gap-2 mb-1">
+          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color }} />
+          <span className="text-gray-400">{entry.name}:</span>
+          <span className="text-white font-bold">
+            {entry.name === "Price" ? `$${entry.value.toFixed(2)}`
+              : entry.name === "Volume" ? `${entry.value}M`
+              : `${entry.value > 0 ? "+" : ""}${entry.value}%`}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
-function scoreToBadge(score: number) {
-  if (score > 0.3)  return { bg: "rgba(16,185,129,0.12)",  border: "rgba(16,185,129,0.35)",  color: "#10b981" };
-  if (score > 0.1)  return { bg: "rgba(52,211,153,0.10)",  border: "rgba(52,211,153,0.30)",  color: "#34d399" };
-  if (score > -0.1) return { bg: "rgba(156,163,175,0.10)", border: "rgba(156,163,175,0.25)", color: "#9ca3af" };
-  if (score > -0.3) return { bg: "rgba(248,113,113,0.10)", border: "rgba(248,113,113,0.30)", color: "#f87171" };
-  return                   { bg: "rgba(239,68,68,0.12)",   border: "rgba(239,68,68,0.35)",   color: "#ef4444" };
-}
+// ─── Stock Chart Component ───────────────────────────────────────────────────
 
-function riskColor(risk: string): string {
-  const r = risk?.toLowerCase();
-  if (r === "low")    return "#10b981";
-  if (r === "medium") return "#f59e0b";
-  return "#ef4444";
-}
+function StockChart({
+  priceHistory,
+  ticker,
+  sentiment,
+  sentimentScore,
+}: {
+  priceHistory: PricePoint[];
+  ticker: string;
+  sentiment: "bullish" | "bearish" | "neutral";
+  sentimentScore: number;
+}) {
+  const [activeView, setActiveView] = useState<"price" | "change" | "volume">("price");
 
-export default async function Home() {
-  const history = await getHistory();
+  const sentimentLineColor =
+    sentiment === "bullish" ? "#22c55e" : sentiment === "bearish" ? "#ef4444" : "#eab308";
 
-  async function handleSearch(formData: FormData) {
-    "use server";
-    const ticker = formData.get("ticker")?.toString().trim().toUpperCase();
-    if (ticker) redirect(`/ticker/${ticker}`);
+  const priceColor = "#22c55e";
+  const changeColor = "#f59e0b";
+  const volumeColor = "#6366f1";
+
+  if (priceHistory.length === 0) {
+    return (
+      <div className="bg-[#0f140f] border border-gray-800 rounded-2xl p-6 flex items-center justify-center h-64">
+        <p className="text-gray-600 text-sm">Price history unavailable</p>
+      </div>
+    );
   }
 
-  const bullish  = history.filter((r: any) => r.average_sentiment_score > 0.15).length;
-  const bearish  = history.filter((r: any) => r.average_sentiment_score <= -0.1).length;
-  const avgScore = history.length
-    ? history.reduce((a: number, r: any) => a + r.average_sentiment_score, 0) / history.length
-    : 0;
+  const latestPrice = priceHistory[priceHistory.length - 1]?.price ?? 0;
+  const firstPrice = priceHistory[0]?.price ?? 0;
+  const totalChange = ((latestPrice - firstPrice) / firstPrice * 100).toFixed(2);
+  const isPositive = parseFloat(totalChange) >= 0;
 
   return (
-    <>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Bebas+Neue&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
-
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-        :root {
-          --bg:            #09090b;
-          --surface:       #111113;
-          --surface-2:     #17171a;
-          --border:        #27272d;
-          --border-bright: #3d3d46;
-          --amber:         #f59e0b;
-          --amber-dim:     #78490a;
-          --text:          #f2f2f4;
-          --text-dim:      #b4b4bc;
-          --text-muted:    #64646c;
-          --green:         #10b981;
-        }
-
-        body {
-          background: var(--bg);
-          color: var(--text);
-          font-family: 'IBM Plex Sans', sans-serif;
-          min-height: 100vh;
-          overflow-x: hidden;
-        }
-
-        /* ── Grid background ── */
-        .grid-bg {
-          position: fixed; inset: 0;
-          background-image:
-            linear-gradient(var(--border) 1px, transparent 1px),
-            linear-gradient(90deg, var(--border) 1px, transparent 1px);
-          background-size: 56px 56px;
-          mask-image: radial-gradient(ellipse 80% 55% at 50% 0%, black 20%, transparent 100%);
-          pointer-events: none; z-index: 0;
-        }
-
-        .amber-glow {
-          position: fixed; top: -240px; left: 50%;
-          transform: translateX(-50%);
-          width: 900px; height: 500px;
-          background: radial-gradient(ellipse, rgba(245,158,11,0.07) 0%, transparent 70%);
-          pointer-events: none; z-index: 0;
-        }
-
-        .page {
-          position: relative; z-index: 1;
-          max-width: 1200px;
-          margin: 0 auto;
-          padding: 0 40px 80px;
-        }
-
-        /* ── Topbar ── */
-        .topbar {
-          display: flex; justify-content: space-between; align-items: center;
-          padding: 22px 0;
-          border-bottom: 1px solid var(--border);
-          margin-bottom: 64px;
-        }
-
-        .topbar-logo {
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: 24px; letter-spacing: 0.18em; color: var(--amber);
-        }
-
-        .topbar-right {
-          display: flex; align-items: center; gap: 8px;
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 10px; letter-spacing: 0.12em;
-          text-transform: uppercase; color: var(--text-muted);
-        }
-
-        .live-dot {
-          width: 6px; height: 6px; border-radius: 50%;
-          background: var(--green);
-          animation: blink 2s ease-in-out infinite;
-        }
-
-        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
-
-        /* ── Hero ── */
-        .hero {
-			display: flex;
-			justify-content: space-between;
-			align-items: flex-end; /* This aligns the bottom of Title with bottom of Search */
-			gap: 40px;
-			margin-bottom: 48px;
-			flex-wrap: wrap;
-		}
-
-		/* Add a helper for the search bar container */
-		.hero-right {
-			padding-bottom: 12px; /* Slight adjustment to match visual baseline of font */
-		}
-
-        .eyebrow {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 9px; letter-spacing: 0.28em;
-          text-transform: uppercase; color: var(--amber);
-          display: flex; align-items: center; gap: 10px;
-          margin-bottom: 16px;
-        }
-
-        .eyebrow::before {
-          content: ''; width: 20px; height: 1px; background: var(--amber);
-        }
-
-        .hero-title {
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: clamp(72px, 9vw, 108px);
-          line-height: 0.88; letter-spacing: 0.02em; color: var(--text);
-        }
-
-        .hero-title span { color: var(--amber); }
-
-        .hero-sub {
-          font-size: 14px; color: var(--text-dim);
-          line-height: 1.75; font-weight: 400;
-          margin-top: 18px; max-width: 400px;
-        }
-
-        /* ── Search ── */
-        .search-wrap {
-          display: flex;
-          border: 1px solid var(--border-bright);
-          border-radius: 4px; overflow: hidden;
-          transition: border-color 0.2s, box-shadow 0.2s;
-          min-width: 380px;
-        //  align-self: flex-end;
-        }
-
-        .search-wrap:focus-within {
-          border-color: var(--amber);
-          box-shadow: 0 0 0 1px var(--amber-dim), 0 0 28px rgba(245,158,11,0.09);
-        }
-
-        .search-prefix {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 11px; color: var(--amber);
-          background: var(--surface-2);
-          padding: 0 14px;
-          display: flex; align-items: center;
-          border-right: 1px solid var(--border);
-          letter-spacing: 0.05em; white-space: nowrap; user-select: none;
-        }
-
-        .search-input {
-          flex: 1; background: var(--surface);
-          border: none; outline: none;
-          padding: 14px 14px;
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 14px; font-weight: 500;
-          color: var(--text); letter-spacing: 0.1em; text-transform: uppercase;
-        }
-
-        .search-input::placeholder {
-          color: var(--text-muted); font-weight: 300;
-          letter-spacing: 0.04em; text-transform: none;
-        }
-
-        .search-btn {
-          background: var(--amber); color: #000;
-          border: none; padding: 0 28px;
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 11px; font-weight: 700;
-          letter-spacing: 0.16em; text-transform: uppercase;
-          cursor: pointer; transition: background 0.15s; white-space: nowrap;
-        }
-
-        .search-btn:hover { background: #fbbf24; }
-
-        /* ── Stats strip ── */
-        .stats-strip {
-          display: flex;
-          gap: 1px;
-          background: var(--border);
-          border: 1px solid var(--border);
-          border-radius: 5px;
-          overflow: hidden;
-          margin-bottom: 36px;
-        }
-
-        .stat {
-			flex: 1;
-			background: var(--surface);
-			padding: 20px 24px;
-			display: flex;
-			align-items: center; /* Centers number and text block vertically */
-			gap: 16px;
-		}
-
-		.stat-value {
-		font-family: 'Bebas Neue', sans-serif;
-		font-size: 42px; /* Slightly larger */
-		color: var(--amber);
-		line-height: 1;
-		}
-
-        .stat-info { display: flex; flex-direction: column; gap: 2px; }
-
-        .stat-label {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 9px; letter-spacing: 0.2em;
-          text-transform: uppercase; color: var(--text-muted);
-        }
-
-        .stat-sub {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 11px; color: var(--text-dim);
-        }
-
-        /* ── Table section ── */
-        .table-section { }
-
-        .table-header {
-          display: flex; align-items: center;
-          justify-content: space-between;
-          margin-bottom: 14px;
-        }
-
-        .table-title {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 10px; letter-spacing: 0.22em;
-          text-transform: uppercase; color: var(--text-dim);
-          display: flex; align-items: center; gap: 10px;
-        }
-
-        .table-title::before {
-          content: ''; width: 3px; height: 14px;
-          background: var(--amber); border-radius: 1px;
-        }
-
-        .table-count {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 10px; color: var(--text-muted);
-          background: var(--surface-2);
-          border: 1px solid var(--border);
-          padding: 3px 12px; border-radius: 20px;
-        }
-
-        .table-wrap {
-          border: 1px solid var(--border);
-          border-radius: 6px; overflow: hidden;
-        }
-
-        .tbl { width: 100%; border-collapse: collapse; }
-
-        .tbl thead tr { background: var(--surface-2); }
-
-        .tbl thead th {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 9px; letter-spacing: 0.22em;
-          text-transform: uppercase; color: var(--text-muted);
-          padding: 14px 24px; text-align: left; font-weight: 500;
-          border-bottom: 1px solid var(--border);
-          white-space: nowrap;
-        }
-
-        .tbl thead th:last-child { text-align: right; }
-
-        .tbl tbody tr {
-          border-bottom: 1px solid var(--border);
-          transition: background 0.12s;
-        }
-
-        .tbl tbody tr:last-child { border-bottom: none; }
-        .tbl tbody tr:hover { background: rgba(245,158,11,0.035); }
-
-        .tbl td { padding: 20px 24px; vertical-align: middle; }
-        .tbl td:last-child { text-align: right; }
-
-        .ticker-cell {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 20px; font-weight: 600;
-          color: var(--text); letter-spacing: 0.06em;
-        }
-
-        .sentiment-badge {
-          display: inline-block;
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 9px; font-weight: 600;
-          letter-spacing: 0.18em; text-transform: uppercase;
-          padding: 5px 11px; border-radius: 2px; border: 1px solid;
-        }
-
-        .score-cell {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 16px; font-weight: 500; letter-spacing: 0.04em;
-        }
-
-        .risk-cell {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 10px; font-weight: 700;
-          letter-spacing: 0.22em; text-transform: uppercase;
-        }
-
-        .date-cell {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 12px; color: var(--text-dim);
-        }
-
-        .analysis-btn {
-          display: inline-flex; align-items: center; gap: 7px;
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 10px; font-weight: 700;
-          letter-spacing: 0.16em; text-transform: uppercase;
-          color: #000; text-decoration: none;
-          background: var(--amber);
-          padding: 9px 18px; border-radius: 3px;
-          transition: background 0.15s, transform 0.1s;
-          white-space: nowrap;
-        }
-
-        .analysis-btn:hover { background: #fbbf24; transform: translateY(-1px); }
-        .analysis-btn:active { transform: translateY(0); }
-
-        /* ── Empty ── */
-        .empty {
-          display: flex; flex-direction: column;
-          align-items: center; justify-content: center;
-          padding: 80px 24px; gap: 14px;
-        }
-
-        .empty-hex { font-size: 40px; opacity: 0.1; }
-
-        .empty-text {
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 11px; color: var(--text-muted);
-          letter-spacing: 0.15em; text-align: center; line-height: 1.8;
-        }
-
-        @media (max-width: 768px) {
-          .page { padding: 0 20px 60px; }
-          .hero { flex-direction: column; align-items: flex-start; }
-          .search-wrap { min-width: 0; width: 100%; }
-          .stats-strip { flex-direction: column; }
-          .hero-title { font-size: 72px; }
-        }
-      `}</style>
-
-      <div className="grid-bg" />
-      <div className="amber-glow" />
-
-      <div className="page">
-
-        {/* Topbar */}
-        <div className="topbar">
-          <div className="topbar-logo">SENTINEL</div>
-          <div className="topbar-right">
-            <div className="live-dot" />
-            PIPELINE ACTIVE · DUAL-ANALYSIS ENGINE v1.0
+    <div className="bg-[#0f140f] border border-gray-800 rounded-2xl p-6">
+      {/* Chart Header */}
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
+        <div>
+          <div className="flex items-center gap-3 mb-1">
+            <h3 className="font-bold text-white text-base uppercase tracking-widest">{ticker}</h3>
+            <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${isPositive ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
+              {isPositive ? "▲" : "▼"} {Math.abs(parseFloat(totalChange))}% (90d)
+            </span>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <span className="text-3xl font-bold text-white">${latestPrice.toFixed(2)}</span>
+            <span className="text-gray-500 text-xs">Current Price</span>
+          </div>
+          {/* Sentiment overlay indicator */}
+          <div className="flex items-center gap-2 mt-2">
+            <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: sentimentLineColor }} />
+            <span className="text-xs text-gray-500">
+              AI Sentiment: <span style={{ color: sentimentLineColor }} className="font-semibold capitalize">{sentiment}</span>
+              {" "}·{" "}
+              <span style={{ color: sentimentLineColor }}>{Math.round(sentimentScore * 100)}% confidence</span>
+            </span>
           </div>
         </div>
 
-        {/* Hero row: title left, search right */}
-        <div className="hero">
-          
-          <div className="hero-left">
-            <div className="eyebrow">Market Intelligence System</div>
-            <div className="hero-title">
-              <div>Sentinel</div>
-              <span>Consensus</span>
-            </div>
-            <p className="hero-sub">
-              Real-time synthesis of market psychology and fundamental accounting data.
-              Enter any ticker to trigger the dual-analysis pipeline.
-            </p>
-          </div>
+        {/* View Switcher */}
+        <div className="flex bg-[#0a0e0a] border border-gray-800 rounded-xl p-1 gap-1 self-start">
+          {(["price", "change", "volume"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setActiveView(v)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all capitalize ${
+                activeView === v
+                  ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              {v === "change" ? "% Change" : v}
+            </button>
+          ))}
+        </div>
+      </div>
 
-          <div className="hero-right">
-            {/* Search Bar moved to the right side */}
-            <form action={handleSearch}>
-              <div className="search-wrap">
-                <div className="search-prefix">TICKER://</div>
-                <input
-                  type="text" name="ticker"
-                  className="search-input"
-                  placeholder="NVDA, AAPL, TSLA…"
-                  required maxLength={10}
-                  autoComplete="off" spellCheck={false}
-                />
-                <button type="submit" className="search-btn">RUN ANALYSIS →</button>
-              </div>
-            </form>
-          </div>
+      {/* Chart */}
+      <div className="h-[300px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={priceHistory} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+            <defs>
+              <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#22c55e" stopOpacity={0.15} />
+                <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
+              </linearGradient>
+            </defs>
 
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f2a1f" vertical={false} />
+            <XAxis
+              dataKey="date"
+              tick={{ fill: "#4b5563", fontSize: 10 }}
+              axisLine={false}
+              tickLine={false}
+              interval={Math.floor(priceHistory.length / 6)}
+            />
+
+            {/* Price / Change left axis */}
+            {activeView !== "volume" && (
+              <YAxis
+                yAxisId="main"
+                domain={["auto", "auto"]}
+                tick={{ fill: "#4b5563", fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+                width={55}
+                tickFormatter={(v: number) => activeView === "price" ? `$${v}` : `${v}%`}
+              />
+            )}
+
+            {/* Volume axis */}
+            {activeView === "volume" && (
+              <YAxis
+                yAxisId="vol"
+                tick={{ fill: "#4b5563", fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+                width={45}
+                tickFormatter={(v: number) => `${v}M`}
+              />
+            )}
+
+            <Tooltip content={<ChartTooltip />} />
+
+            {/* Zero reference line for % change view */}
+            {activeView === "change" && (
+              <ReferenceLine yAxisId="main" y={0} stroke="#374151" strokeDasharray="4 2" />
+            )}
+
+            {/* PRICE line */}
+            {activeView === "price" && (
+              <Line
+                yAxisId="main"
+                type="monotone"
+                dataKey="price"
+                name="Price"
+                stroke={priceColor}
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4, fill: priceColor, stroke: "#0f140f", strokeWidth: 2 }}
+              />
+            )}
+
+            {/* CHANGE line */}
+            {activeView === "change" && (
+              <Line
+                yAxisId="main"
+                type="monotone"
+                dataKey="change"
+                name="% Change"
+                stroke={changeColor}
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4, fill: changeColor, stroke: "#0f140f", strokeWidth: 2 }}
+              />
+            )}
+
+            {/* VOLUME bars */}
+            {activeView === "volume" && (
+              <Bar
+                yAxisId="vol"
+                dataKey="volume"
+                name="Volume"
+                fill={volumeColor}
+                opacity={0.7}
+                radius={[2, 2, 0, 0]}
+              />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Quick stats strip */}
+      <div className="grid grid-cols-3 gap-3 mt-4 pt-4 border-t border-gray-800/60">
+        {[
+          {
+            label: "90d High",
+            value: `$${Math.max(...priceHistory.map(p => p.price)).toFixed(2)}`,
+            color: "text-green-400",
+          },
+          {
+            label: "90d Low",
+            value: `$${Math.min(...priceHistory.map(p => p.price)).toFixed(2)}`,
+            color: "text-red-400",
+          },
+          {
+            label: "Avg Volume",
+            value: `${(priceHistory.reduce((a, p) => a + p.volume, 0) / priceHistory.length).toFixed(1)}M`,
+            color: "text-indigo-400",
+          },
+        ].map((stat) => (
+          <div key={stat.label} className="text-center">
+            <p className={`text-sm font-bold ${stat.color}`}>{stat.value}</p>
+            <p className="text-[10px] text-gray-600 mt-0.5">{stat.label}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Page ───────────────────────────────────────────────────────────────
+
+export default function Home() {
+  const [ticker, setTicker] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [consensus, setConsensus] = useState<NormalisedConsensus | null>(null);
+  const [priceHistory, setPriceHistory] = useState<PricePoint[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
+
+  const handleSearch = async () => {
+    if (!ticker.trim()) return;
+    setLoading(true);
+    setError("");
+    setConsensus(null);
+    setPriceHistory([]);
+
+    try {
+      const res = await fetch(`http://localhost:8000/ticker/${ticker.trim()}`);
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || "Something went wrong");
+      }
+      const raw: StockConsensus = await res.json();
+      const companyName = SUPPORTED_TICKERS[ticker.trim()] || ticker.trim();
+      setConsensus(normalise(raw, companyName));
+
+      // Fetch price history in parallel (non-blocking)
+      setChartLoading(true);
+      fetchPriceHistory(ticker.trim()).then((history) => {
+        setPriceHistory(history);
+        setChartLoading(false);
+      });
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("Failed to fetch consensus. Is the backend running?");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sentimentColor = (s: "bullish" | "bearish" | "neutral") => {
+    if (s === "bullish") return "text-green-400";
+    if (s === "bearish") return "text-red-400";
+    return "text-yellow-400";
+  };
+
+  const riskColor = (r: "low" | "medium" | "high") => {
+    if (r === "low") return "text-green-400";
+    if (r === "high") return "text-red-400";
+    return "text-yellow-400";
+  };
+
+  return (
+    <main className="min-h-screen bg-[#0a0e0a] text-white font-sans">
+
+      {/* Navbar */}
+      <nav className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-8 py-4 bg-[#0a0e0a]/80 backdrop-blur border-b border-gray-800/50">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-green-500/20 border border-green-500/40 flex items-center justify-center">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2L3 7v10l9 5 9-5V7L12 2z" stroke="#22c55e" strokeWidth="1.5" fill="none"/>
+              <path d="M12 8v8M8 10l4-2 4 2" stroke="#22c55e" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </div>
+          <div>
+            <div className="text-sm font-bold tracking-widest text-white">SENTINEL</div>
+            <div className="text-[10px] text-gray-500 -mt-0.5">AI Market Sentiment</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse inline-block" />
+          Live Analysis
+        </div>
+      </nav>
+
+      {/* Hero */}
+      <div className="relative min-h-[480px] flex items-center justify-center overflow-hidden pt-16">
+        <div className="absolute left-0 top-0 bottom-0 w-2/5 pointer-events-none">
+          <Image src="/bull.jpg" alt="Bull" fill className="object-cover object-center" style={{ opacity: 0.35 }} priority />
+          <div className="absolute inset-0 bg-gradient-to-r from-[#0a0e0a]/20 via-transparent to-[#0a0e0a]" />
+          <div className="absolute inset-0 bg-gradient-to-b from-[#0a0e0a]/60 to-[#0a0e0a]/60" />
+        </div>
+        <div className="absolute right-0 top-0 bottom-0 w-2/5 pointer-events-none">
+          <Image src="/bear.jpg" alt="Bear" fill className="object-cover object-center" style={{ opacity: 0.35 }} priority />
+          <div className="absolute inset-0 bg-gradient-to-l from-[#0a0e0a]/20 via-transparent to-[#0a0e0a]" />
+          <div className="absolute inset-0 bg-gradient-to-b from-[#0a0e0a]/60 to-[#0a0e0a]/60" />
         </div>
 
-        {/* Stats strip */}
-        {history.length > 0 && (
-          <div className="stats-strip">
-            <div className="stat">
-              <div className="stat-value">{history.length}</div>
-              <div className="stat-info">
-                <div className="stat-label">Pipelines Run</div>
-                <div className="stat-sub">Total assets analyzed</div>
-              </div>
+        <div className="relative z-10 text-center px-4 w-full max-w-2xl mx-auto">
+          <h1 className="text-4xl md:text-5xl font-bold mb-3 tracking-tight">Market Sentiment Analyzer</h1>
+          <p className="text-gray-400 mb-10">AI-powered insights for smarter investment decisions</p>
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-sm">🔍</span>
+              <select
+                className="w-full bg-[#111811] border border-gray-700 hover:border-gray-600 focus:border-green-500 rounded-xl pl-10 pr-4 py-4 text-white focus:outline-none transition-colors appearance-none text-sm"
+                value={ticker}
+                onChange={(e) => setTicker(e.target.value)}
+              >
+                <option value="">Search for a company or stock (e.g. Apple, Amazon)</option>
+                {Object.entries(SUPPORTED_TICKERS).map(([code, name]) => (
+                  <option key={code} value={code}>{code} — {name}</option>
+                ))}
+              </select>
             </div>
-            <div className="stat">
-              <div className="stat-value" style={{ color: "#10b981" }}>{bullish}</div>
-              <div className="stat-info">
-                <div className="stat-label">Bullish</div>
-                <div className="stat-sub">{Math.round(bullish / history.length * 100)}% of watchlist</div>
-              </div>
+            <button
+              onClick={handleSearch}
+              disabled={loading || !ticker}
+              className="bg-green-500 hover:bg-green-400 active:bg-green-600 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed px-8 py-4 rounded-xl font-bold text-black transition-all text-sm whitespace-nowrap"
+            >
+              {loading ? "Analysing..." : "Analyze"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 pb-16">
+
+        {/* Loading */}
+        {loading && (
+          <div className="text-center py-24">
+            <div className="relative inline-block mb-6">
+              <div className="w-16 h-16 border-4 border-green-500/20 rounded-full" />
+              <div className="w-16 h-16 border-4 border-green-500 border-t-transparent rounded-full animate-spin absolute inset-0" />
             </div>
-            <div className="stat">
-              <div className="stat-value" style={{ color: "#ef4444" }}>{bearish}</div>
-              <div className="stat-info">
-                <div className="stat-label">Bearish</div>
-                <div className="stat-sub">{Math.round(bearish / history.length * 100)}% of watchlist</div>
-              </div>
-            </div>
-            <div className="stat">
-              <div className="stat-value" style={{ color: avgScore >= 0 ? "#10b981" : "#ef4444" }}>
-                {avgScore >= 0 ? "+" : ""}{avgScore.toFixed(3)}
-              </div>
-              <div className="stat-info">
-                <div className="stat-label">Avg Sentiment</div>
-                <div className="stat-sub">Composite index vector</div>
-              </div>
-            </div>
+            <p className="text-gray-300 text-lg font-medium">Running AI Analysis</p>
+            <p className="text-gray-600 text-sm mt-2">Fetching data · Analysing fundamentals · Synthesising consensus</p>
+            <p className="text-gray-700 text-xs mt-1">This may take 30–60 seconds</p>
           </div>
         )}
 
-        {/* Table */}
-        <div className="table-section">
-          <div className="table-header">
-            <div className="table-title">Recent Pipeline Executions</div>
-            <div className="table-count">{history.length} record{history.length !== 1 ? "s" : ""}</div>
+        {/* Error */}
+        {error && (
+          <div className="bg-red-500/5 border border-red-500/20 rounded-2xl p-5 text-red-400 text-center text-sm mt-4">
+            ⚠ {error}
           </div>
+        )}
 
-          <div className="table-wrap">
-            {history.length === 0 ? (
-              <div className="empty">
-                <div className="empty-hex">⬡</div>
-                <div className="empty-text">
-                  NO DATABASE RECORDS<br />
-                  SEARCH A TICKER ABOVE TO INITIATE THE PIPELINE
+        {/* Results */}
+        {consensus && (
+          <div className="space-y-4 mt-2">
+
+            {/* Company Header */}
+            <div className="text-center py-4">
+              <h2 className="text-3xl font-bold">{consensus.company_name}</h2>
+              <p className="text-gray-500 text-sm mt-1">Stock Market · {consensus.ticker}</p>
+            </div>
+
+            {/* ── STOCK CHART ── */}
+            {chartLoading ? (
+              <div className="bg-[#0f140f] border border-gray-800 rounded-2xl p-6 flex items-center justify-center h-[420px]">
+                <div className="text-center">
+                  <div className="relative inline-block mb-4">
+                    <div className="w-10 h-10 border-2 border-green-500/20 rounded-full" />
+                    <div className="w-10 h-10 border-2 border-green-500 border-t-transparent rounded-full animate-spin absolute inset-0" />
+                  </div>
+                  <p className="text-gray-500 text-xs">Loading price history…</p>
                 </div>
               </div>
             ) : (
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th>Asset</th>
-                    <th>Consensus</th>
-                    <th>Score</th>
-                    <th>Risk</th>
-                    <th>Last Synced</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.map((record: any) => {
-                    const badge = scoreToBadge(record.average_sentiment_score);
-                    const color = scoreToColor(record.average_sentiment_score);
-                    return (
-                      <tr key={record.id}>
-                        <td><span className="ticker-cell">{record.ticker}</span></td>
-                        <td>
-                          <span
-                            className="sentiment-badge"
-                            style={{ background: badge.bg, borderColor: badge.border, color: badge.color }}
-                          >
-                            {record.aggregate_sentiment}
-                          </span>
-                        </td>
-                        <td>
-                          <span className="score-cell" style={{ color }}>
-                            {record.average_sentiment_score >= 0 ? "+" : ""}
-                            {record.average_sentiment_score.toFixed(4)}
-                          </span>
-                        </td>
-                        <td>
-                          <span className="risk-cell" style={{ color: riskColor(record.consensus_risk_level) }}>
-                            {record.consensus_risk_level}
-                          </span>
-                        </td>
-                        <td>
-                          <span className="date-cell">
-                            {new Date(record.fetched_at).toLocaleDateString("en-US", {
-                              month: "short", day: "2-digit", year: "numeric"
-                            })}
-                          </span>
-                        </td>
-                        <td>
-                          <Link href={`/ticker/${record.ticker}`} className="analysis-btn">
-                            ANALYSIS →
-                          </Link>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <StockChart
+                priceHistory={priceHistory}
+                ticker={consensus.ticker}
+                sentiment={consensus.overall_sentiment}
+                sentimentScore={consensus.confidence_score}
+              />
             )}
-          </div>
-        </div>
 
+            {/* Metric Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+
+              {/* Sentiment */}
+              <div className="bg-[#0f140f] border border-gray-800 rounded-2xl p-6 hover:border-gray-700 transition-colors">
+                <p className="text-gray-500 text-xs uppercase tracking-widest mb-4">Overall Sentiment</p>
+                <div className="flex items-center gap-4">
+                  <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-3xl ${
+                    consensus.overall_sentiment === "bullish"
+                      ? "bg-green-500/10 border border-green-500/20"
+                      : consensus.overall_sentiment === "bearish"
+                      ? "bg-red-500/10 border border-red-500/20"
+                      : "bg-yellow-500/10 border border-yellow-500/20"
+                  }`}>
+                    {consensus.overall_sentiment === "bullish" ? "🐂" : consensus.overall_sentiment === "bearish" ? "🐻" : "➡️"}
+                  </div>
+                  <div>
+                    <div className={`text-2xl font-bold capitalize ${sentimentColor(consensus.overall_sentiment)}`}>
+                      {consensus.overall_sentiment}
+                    </div>
+                    <div className="text-gray-600 text-xs mt-0.5">
+                      {consensus.overall_sentiment === "bullish"
+                        ? "Market outlook positive"
+                        : consensus.overall_sentiment === "bearish"
+                        ? "Market outlook negative"
+                        : "Market outlook mixed"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Confidence */}
+              <div className="bg-[#0f140f] border border-gray-800 rounded-2xl p-6 hover:border-gray-700 transition-colors">
+                <p className="text-gray-500 text-xs uppercase tracking-widest mb-4">Confidence Score</p>
+                <div className="text-5xl font-bold text-white mb-4">
+                  {Math.round(consensus.confidence_score * 100)}
+                  <span className="text-2xl text-gray-500">%</span>
+                </div>
+                <div className="w-full bg-gray-800/60 rounded-full h-1.5">
+                  <div
+                    className="h-1.5 rounded-full bg-gradient-to-r from-green-600 to-green-400 transition-all duration-700"
+                    style={{ width: `${consensus.confidence_score * 100}%` }}
+                  />
+                </div>
+                <p className="text-gray-600 text-xs mt-2">
+                  {consensus.confidence_score >= 0.7
+                    ? "High Confidence"
+                    : consensus.confidence_score >= 0.4
+                    ? "Moderate Confidence"
+                    : "Low Confidence"}
+                </p>
+              </div>
+
+              {/* Risk */}
+              <div className="bg-[#0f140f] border border-gray-800 rounded-2xl p-6 hover:border-gray-700 transition-colors">
+                <p className="text-gray-500 text-xs uppercase tracking-widest mb-4">Risk Rating</p>
+                <div className={`text-5xl font-bold capitalize mb-4 ${riskColor(consensus.risk_rating)}`}>
+                  {consensus.risk_rating}
+                </div>
+                <div className="relative w-full h-1.5 rounded-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500">
+                  <div
+                    className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-white rounded-full shadow-lg border-2 border-[#0f140f] transition-all duration-700"
+                    style={{
+                      left: consensus.risk_rating === "low"
+                        ? "12%"
+                        : consensus.risk_rating === "high"
+                        ? "88%"
+                        : "50%",
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-gray-700 mt-2">
+                  <span>Low</span><span>Medium</span><span>High</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Market Psychology + Accounting */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="bg-[#0f140f] border border-gray-800 rounded-2xl p-6">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-6 h-6 rounded-md bg-green-500/20 flex items-center justify-center">
+                    <span className="text-green-400 text-xs">✦</span>
+                  </div>
+                  <h3 className="font-semibold text-sm uppercase tracking-widest text-gray-300">Market Psychology</h3>
+                </div>
+                <p className="text-gray-300 leading-relaxed text-sm">{consensus.market_psychology_perspective}</p>
+              </div>
+
+              <div className="bg-[#0f140f] border border-gray-800 rounded-2xl p-6">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-6 h-6 rounded-md bg-blue-500/20 flex items-center justify-center">
+                    <span className="text-blue-400 text-xs">◈</span>
+                  </div>
+                  <h3 className="font-semibold text-sm uppercase tracking-widest text-gray-300">Accounting Perspective</h3>
+                </div>
+                <p className="text-gray-300 leading-relaxed text-sm">{consensus.accounting_perspective}</p>
+              </div>
+            </div>
+
+            {/* Bull vs Bear */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+
+              {/* Positive */}
+              <div className="relative overflow-hidden bg-[#0a120a] border border-green-900/40 rounded-2xl p-6">
+                <div className="absolute inset-0 pointer-events-none">
+                  <Image src="/bull.jpg" alt="" fill className="object-cover object-center opacity-10" />
+                  <div className="absolute inset-0 bg-gradient-to-r from-[#0a120a]/95 via-[#0a120a]/80 to-[#0a120a]/60" />
+                </div>
+                <div className="relative z-10">
+                  <div className="flex items-center gap-2 mb-5">
+                    <span className="text-green-400 text-lg font-bold">↗</span>
+                    <h3 className="font-bold text-green-400 uppercase tracking-widest text-sm">Positive Factors</h3>
+                  </div>
+                  <ul className="space-y-3">
+                    {consensus.bull_case.map((point, i) => (
+                      <li key={i} className="flex gap-3 text-sm text-gray-300 leading-snug">
+                        <span className="text-green-500 mt-0.5 flex-shrink-0 font-bold">✓</span>
+                        {point}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              {/* Negative */}
+              <div className="relative overflow-hidden bg-[#120a0a] border border-red-900/40 rounded-2xl p-6">
+                <div className="absolute inset-0 pointer-events-none">
+                  <Image src="/bear.jpg" alt="" fill className="object-cover object-center opacity-10" />
+                  <div className="absolute inset-0 bg-gradient-to-l from-[#120a0a]/95 via-[#120a0a]/80 to-[#120a0a]/60" />
+                </div>
+                <div className="relative z-10">
+                  <div className="flex items-center gap-2 mb-5">
+                    <span className="text-red-400 text-lg font-bold">↘</span>
+                    <h3 className="font-bold text-red-400 uppercase tracking-widest text-sm">Negative Factors</h3>
+                  </div>
+                  <ul className="space-y-3">
+                    {consensus.bear_case.map((point, i) => (
+                      <li key={i} className="flex gap-3 text-sm text-gray-300 leading-snug">
+                        <span className="text-red-500 mt-0.5 flex-shrink-0 font-bold">✗</span>
+                        {point}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            {/* Key News Sources */}
+            {consensus.key_news_sources && consensus.key_news_sources.length > 0 && (
+              <div className="bg-[#0f140f] border border-gray-800 rounded-2xl p-6">
+                <div className="flex items-center gap-2 mb-5">
+                  <div className="w-6 h-6 rounded-md bg-gray-800 flex items-center justify-center">
+                    <span className="text-gray-400 text-xs">▤</span>
+                  </div>
+                  <h3 className="font-semibold text-sm uppercase tracking-widest text-gray-300">
+                    Key News Sources
+                  </h3>
+                  <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full ml-auto">
+                    {consensus.key_news_sources.length} sources
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {consensus.key_news_sources.map((sourceUrl, i) => (
+                    <div
+                      key={i}
+                      onClick={() => window.open(sourceUrl, "_blank")}
+                      className="bg-[#0a0e0a] border border-gray-800/60 rounded-xl p-4 hover:border-green-500/40 hover:bg-[#0a120a] transition-all group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 bg-gray-800 rounded-lg flex items-center justify-center text-xs font-bold text-gray-300 flex-shrink-0 group-hover:bg-green-500/20 group-hover:text-green-400 transition-colors">
+                          {extractDomain(sourceUrl).charAt(0).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-400 group-hover:text-green-400 transition-colors truncate">
+                            {extractDomain(sourceUrl)}
+                          </p>
+                          <p className="text-[10px] text-gray-600 truncate">{sourceUrl}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+          </div>
+        )}
       </div>
-    </>
+    </main>
   );
 }
