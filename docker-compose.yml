@@ -1,5 +1,6 @@
 services:
   backend:
+    container_name: sentinel-backend
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -15,6 +16,7 @@ services:
       - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY}
 
   frontend:
+    container_name: sentinel-frontend
     build:
       context: ./frontend
       dockerfile: Dockerfile
