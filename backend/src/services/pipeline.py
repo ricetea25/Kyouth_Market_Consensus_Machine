@@ -11,9 +11,13 @@ from src.models.stock import StockConsensus
 from src.schemas.ai.market_analysis import MarketAnalysis
 from src.config import settings 
 
+import re
+
 # 1. Initialize the patched OpenAI client with Instructor
 # This wraps the standard OpenAI client with Pydantic validation capabilities
 ai_client = genai.Client(api_key=settings.gemini_api_key)
+
+TICKER_PATTERN = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
 
 async def run_market_pipeline(
     ticker: str, 
@@ -22,6 +26,12 @@ async def run_market_pipeline(
 ) -> StockConsensus:
     
     clean_ticker = ticker.upper().strip()
+    
+    if not clean_ticker or not TICKER_PATTERN.match(clean_ticker):
+        raise ValueError(
+            f"Invalid ticker format: '{clean_ticker}'. "
+            f"Please use a standard symbol (e.g., 'AAPL', 'GOOGL', or 'BRK.B')."
+        )
 
     # =================================================================
     # MOCK BYPASS (For Local Testing without hitting API limits)
@@ -109,7 +119,12 @@ async def run_market_pipeline(
             if "Information" in raw_fundamentals or "Information" in raw_news:
                 print("⚠️ Alpha Vantage warning: Free-tier rate limit hit anyway.")
                 
+            if "Error Message" in raw_fundamentals or len(raw_fundamentals.keys()) == 0:
+                raise ValueError(f"Invalid ticker symbol: '{clean_ticker}' does not exist or has no data.")
+                
         except Exception as e:
+            if isinstance(e, ValueError):
+                raise e
             print(f"Failed harvesting external market data: {str(e)}")
             raw_fundamentals, raw_news = {}, {}
 
@@ -126,17 +141,30 @@ async def run_market_pipeline(
         f"--- PERSPECTIVE B: MARKET PSYCHOLOGY & LIVE HEADLINES ---\n{str(raw_news)[:12000]}" 
     )
     
-    response = await ai_client.aio.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=MarketAnalysis,
+    try:
+        response = await ai_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=MarketAnalysis,
+            )
         )
-    )
+        ai_analysis: MarketAnalysis = response.parsed
 
-    # The SDK automatically maps the JSON back into your Pydantic object here
-    ai_analysis: MarketAnalysis = response.parsed
+    except Exception as ai_error:
+        print(f"⚠️ AI Synthesis Failed for {clean_ticker}: {str(ai_error)}")
+        # Generate a safe, structured fallback so the app doesn't crash
+        ai_analysis = MarketAnalysis(
+            aggregate_sentiment="DATA UNAVAILABLE",
+            average_sentiment_score=0.0,
+            consensus_risk_level="UNKNOWN",
+            accounting_perspective="AI processing failed. Unable to synthesize fundamentals at this time.",
+            market_psychology_perspective="AI processing failed. Unable to synthesize news sentiment.",
+            key_news_sources=[],
+            the_bull_case="Analysis temporarily unavailable.",
+            the_bear_case="Analysis temporarily unavailable."
+        )
 
     # =================================================================
     # PHASE 3: DATABASE MAPPING & PERSISTENCE
