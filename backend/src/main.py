@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
+from sqlalchemy import func
 
 from .database import init_db, get_session
 from .models.stock import StockConsensus
@@ -40,8 +41,24 @@ def health_check():
 
 @app.get("/history", response_model=list[StockConsensus])
 def get_analysis_history(session: Session = Depends(get_session)):
-    # Pulls all records from the DB, ordered by the most recently fetched
-    statement = select(StockConsensus).order_by(StockConsensus.fetched_at.desc())
+    # Group by ticker to only get the absolute latest record for the landing page dashboard
+    subquery = select(
+        StockConsensus.ticker, 
+        func.max(StockConsensus.fetched_at).label("max_date")
+    ).group_by(StockConsensus.ticker).subquery()
+
+    statement = select(StockConsensus).join(
+        subquery, 
+        (StockConsensus.ticker == subquery.c.ticker) & 
+        (StockConsensus.fetched_at == subquery.c.max_date)
+    ).order_by(StockConsensus.fetched_at.desc())
+    
+    return session.exec(statement).all()
+
+@app.get("/ticker/{symbol}/history", response_model=list[StockConsensus])
+def get_ticker_history(symbol: str, session: Session = Depends(get_session)):
+    # Pulls all historical records for this specific ticker, ordered chronologically
+    statement = select(StockConsensus).where(StockConsensus.ticker == symbol.upper()).order_by(StockConsensus.fetched_at.asc())
     return session.exec(statement).all()
 
 
@@ -49,34 +66,30 @@ def get_analysis_history(session: Session = Depends(get_session)):
 async def get_ticker_consensus(symbol: str, session: Session = Depends(get_session)):
     clean_symbol = symbol.upper().strip()
     
-    # 1. Check Cache 
-    statement = select(StockConsensus).where(StockConsensus.ticker == clean_symbol)
-    cached_result = session.exec(statement).first()
+    # 1. Get the MOST RECENT record for this ticker (ORDER BY fetched_at DESC)
+    statement = select(StockConsensus).where(
+        StockConsensus.ticker == clean_symbol
+    ).order_by(StockConsensus.fetched_at.desc())
     
-    if cached_result:
-        # Timezone-aware calculation (Modern Python 3.10+)
+    latest_record = session.exec(statement).first()
+    
+    if latest_record:
         now_utc = datetime.now(timezone.utc)
-        
-        # Ensure cached_result.fetched_at is also timezone-aware 
-        # (If your DB driver drops tz info, ensure it's mapped correctly)
-        fetched_at = cached_result.fetched_at.replace(tzinfo=timezone.utc) if cached_result.fetched_at.tzinfo is None else cached_result.fetched_at
+        fetched_at = latest_record.fetched_at.replace(tzinfo=timezone.utc) if latest_record.fetched_at.tzinfo is None else latest_record.fetched_at
         
         age = now_utc - fetched_at
         
+        # If it's less than 24 hours old, return the cached version
         if age < timedelta(hours=24):
-            return cached_result
-        
-        # STRATEGY: Instead of deleting, pass the stale object to your pipeline 
-        # so it can overwrite its values. This avoids primary key churn.
-        # If your pipeline expects to create a brand new object, comment out the lines below
-        # and handle deletion cleanly.
-        print(f"Data for {clean_symbol} is stale ({age.total_seconds() / 3600:.1f} hours old). Refreshing...")
+            return latest_record
+            
+        print(f"Data for {clean_symbol} is stale ({age.total_seconds() / 3600:.1f} hours old). Generating new historical point...")
 
-    # 2. Trigger Generation Pipeline worker if data is missing or stale
+    # 2. Trigger Pipeline to create a BRAND NEW row
     try:
-        # Note: Pass `cached_result` (which might be None or a stale object) 
-        # into your pipeline so it knows whether to perform an UPDATE or an INSERT.
-        fresh_analysis = await run_market_pipeline(clean_symbol, session, existing_record=cached_result)
+        # Notice we removed `existing_record=latest_record`! 
+        # This forces the pipeline to INSERT a new row instead of UPDATE.
+        fresh_analysis = await run_market_pipeline(clean_symbol, session)
         return fresh_analysis
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline processing failed: {str(e)}")
