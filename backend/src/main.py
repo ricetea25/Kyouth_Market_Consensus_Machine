@@ -91,5 +91,7 @@ async def get_ticker_consensus(symbol: str, session: Session = Depends(get_sessi
         # This forces the pipeline to INSERT a new row instead of UPDATE.
         fresh_analysis = await run_market_pipeline(clean_symbol, session)
         return fresh_analysis
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline processing failed: {str(e)}")
