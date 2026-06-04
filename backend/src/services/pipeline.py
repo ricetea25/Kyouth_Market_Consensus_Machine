@@ -139,6 +139,8 @@ async def run_market_pipeline(
         
 		"key_news_sources": ai_analysis.key_news_sources,
         
+		"accounting_source_url": f"https://www.sec.gov/cgi-bin/browse-edgar?CIK={clean_ticker}&action=getcompany",
+        
         "the_bull_case": ai_analysis.the_bull_case,
         "the_bear_case": ai_analysis.the_bear_case,
         "consensus_risk_level": ai_analysis.consensus_risk_level,
