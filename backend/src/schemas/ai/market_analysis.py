@@ -14,6 +14,9 @@ class MarketAnalysis(BaseModel):
     market_psychology_perspective: str = Field(
         description="A concise summary detailing the current public narrative, news buzz, institutional accumulation trends, and market psychology."
     )
+    key_news_sources: list[str] = Field(
+        description="Extract a list of the top 3 to 5 most important source URLs or author publications that drove your sentiment analysis."
+    )
     the_bull_case: str = Field(
         description="A highly concise summary of the primary positive catalysts, growth vectors, and bullish arguments."
     )

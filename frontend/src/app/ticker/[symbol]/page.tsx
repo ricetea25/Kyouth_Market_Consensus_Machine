@@ -55,8 +55,9 @@ function confidencePct(score: number): number {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export default async function TickerPage({ params }: { params: { symbol: string } }) {
-  const data = await getConsensusData(params.symbol);
+export default async function TickerPage({ params }: { params: Promise<{ symbol: string }> }) {
+  const resolvedParams = await params;
+  const data = await getConsensusData(resolvedParams.symbol);
 
   const sentiment = scoreToLabel(data.average_sentiment_score);
   const risk = riskStyle(data.consensus_risk_level);
