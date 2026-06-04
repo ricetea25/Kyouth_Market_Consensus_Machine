@@ -1,7 +1,5 @@
 from sqlmodel import SQLModel, create_engine, Session
 from .config import settings
-# Import your models so SQLModel knows about them before creating tables
-from .models.stock import StockConsensus 
 
 # check_same_thread=False is needed for SQLite with FastAPI
 engine = create_engine(
