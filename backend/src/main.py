@@ -10,6 +10,8 @@ from .database import init_db, get_session
 from .models.stock import StockConsensus
 from .services.pipeline import run_market_pipeline
 
+import re
+
 # ==========================================
 # 1. LIFESPAN & APP INITIALIZATION
 # ==========================================
@@ -61,11 +63,17 @@ def get_ticker_history(symbol: str, session: Session = Depends(get_session)):
     statement = select(StockConsensus).where(StockConsensus.ticker == symbol.upper()).order_by(StockConsensus.fetched_at.asc())
     return session.exec(statement).all()
 
+TICKER_PATTERN = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
 
 @app.get("/ticker/{symbol}", response_model=StockConsensus)
 async def get_ticker_consensus(symbol: str, session: Session = Depends(get_session)):
     clean_symbol = symbol.upper().strip()
     
+    if not TICKER_PATTERN.match(clean_symbol):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid ticker format: '{clean_symbol}'. Please use a standard ticker format (e.g., 'AAPL', 'GOOGL', or 'BRK.B')."
+        )
     # 1. Get the MOST RECENT record for this ticker (ORDER BY fetched_at DESC)
     statement = select(StockConsensus).where(
         StockConsensus.ticker == clean_symbol
