@@ -4,7 +4,7 @@ from typing import Dict, Any
 
 class StockConsensus(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    ticker: str = Field(index=True, unique=True)
+    ticker: str = Field(index=True)
     aggregate_sentiment: str
     average_sentiment_score: float
     accounting_perspective: str
