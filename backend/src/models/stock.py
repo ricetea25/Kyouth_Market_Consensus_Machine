@@ -12,6 +12,7 @@ class StockConsensus(SQLModel, table=True):
     the_bull_case: str
     the_bear_case: str
     consensus_risk_level: str
+    key_news_sources: list[str] = Field(default=[], sa_type=JSON)
     # Storing structured JSON data details (Map Phase inputs used)
     raw_source_meta: list[Dict[str, Any]] = Field(default=[], sa_type=JSON)
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -133,6 +133,12 @@ async def run_market_pipeline(
         "ticker": clean_ticker,
         "aggregate_sentiment": ai_analysis.aggregate_sentiment,
         "average_sentiment_score": ai_analysis.average_sentiment_score,
+        
+		"accounting_perspective": ai_analysis.accounting_perspective,
+        "market_psychology_perspective": ai_analysis.market_psychology_perspective,
+        
+		"key_news_sources": ai_analysis.key_news_sources,
+        
         "the_bull_case": ai_analysis.the_bull_case,
         "the_bear_case": ai_analysis.the_bear_case,
         "consensus_risk_level": ai_analysis.consensus_risk_level,
