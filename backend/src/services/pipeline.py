@@ -188,16 +188,8 @@ async def run_market_pipeline(
         "raw_source_meta": [raw_fundamentals, raw_news],
         "fetched_at": datetime.now(timezone.utc)
     }
-
-    if existing_record:
-        # Update existing cached record
-        for key, value in pipeline_data.items():
-            setattr(existing_record, key, value)
-        db_record = existing_record
-    else:
-        # Create brand new record
-        db_record = StockConsensus(**pipeline_data)
-        session.add(db_record)
+    db_record = StockConsensus(**pipeline_data)
+    session.add(db_record)
 
     session.commit()
     session.refresh(db_record)
