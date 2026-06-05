@@ -22,7 +22,7 @@ Provide a simple web app that fetches market data for a ticker, runs AI-driven s
 ```mermaid
 flowchart LR
   A[User enters ticker in frontend] --> B[Next.js frontend]
-  B --> C[FastAPI backend /ticker/{symbol}]
+  B --> C["FastAPI backend /ticker/{symbol}"]
   C --> D[Validate ticker and check cache]
   D --> E[Alpha Vantage fundamentals + news]
   E --> F[Gemini synthesis]
