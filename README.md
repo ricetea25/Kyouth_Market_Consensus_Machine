@@ -118,11 +118,27 @@ This installs backend dependencies with `uv`, installs frontend dependencies wit
 
 ## Limitations
 
-- The Docker backend currently runs with mock mode enabled unless the environment flag is changed, so live API behavior depends on configuration.
-- The frontend chart can emit a width and height warning when the container is measured before layout settles. The chart often still renders, but the layout needs hardening.
-- Alpha Vantage rate limits can still affect live runs even with sequential fetching and caching.
-- Gemini failures fall back to a generic analysis object, which keeps the app alive but reduces analysis quality.
-- Future improvements include persistent database volumes, explicit production configuration, stronger API error handling, and fixing the chart container sizing issue.
+- Chart Rendering Quirks: The frontend Recharts container can occasionally emit a width/height warning when measured before the layout completely settles. While the chart still renders successfully, the layout lifecycle needs hardening.
+
+- External API Bottlenecks: Alpha Vantage rate limits (especially on free tiers) can throttle live pipeline runs, even with sequential fetching and our 24-hour database caching strategy.
+
+- Single-Source Bias: Currently, the system relies exclusively on Alpha Vantage for both fundamental data and news sentiment. This creates a blind spot for "unofficial" retail market psychology.
+
+- LLM Context Limits & Hallucinations: While the pipeline processes up to 25 recent articles, massive news days could exceed optimal token windows. Furthermore, Gemini failures currently fall back to a generic, static analysis object—keeping the app alive but temporarily reducing the quality of the insights.
+
+- Database Concurrency: The project uses SQLite for ease of setup. While perfect for a local demo, SQLite locks the entire database during writes, which would cause bottlenecks if multiple users triggered the pipeline simultaneously in a production environment.
+
+## Future Improvements
+
+- Alternative Data Integration (Web Scraping): Expand the ingestion pipeline beyond official news APIs to include "alt-data" sources. Scraping subreddits (like r/WallStreetBets) or other social platforms will capture retail momentum, irrational exuberance, and non-official risk indicators, creating a much more accurate "Market Psychology" perspective.
+
+- Interactive "Wikipedia-Style" Glossary: Enhance the frontend UI by having the AI automatically identify and wrap complex financial jargon (e.g., "EBITDA", "Short Squeeze", "P/E Ratio") in hoverable tooltip components. This allows users to view dynamic, context-aware definitions without leaving the dashboard.
+
+- Rich Multi-Layered Data Visualization: Upgrade the existing Recharts sentiment graph by overlaying additional data points. Future iterations could plot trading volume, moving averages, or spikes in social media mentions directly against the price and sentiment trendlines.
+
+- Robust Production Infrastructure: Migrate from local SQLite to a robust PostgreSQL database using Alembic for automated schema migrations. Implement persistent Docker volumes to ensure data durability across container restarts.
+
+- Resilient AI Error Handling: Improve the AI fallback mechanism to provide partial insights (e.g., returning fundamental analysis even if the news sentiment extraction fails) rather than defaulting to a completely generic response.
 
 ## Database Inspection
 
