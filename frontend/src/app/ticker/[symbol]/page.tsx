@@ -6,6 +6,8 @@ interface StockConsensus {
   ticker: string;
   aggregate_sentiment: string;
   average_sentiment_score: number;
+  confidence_score: number;
+  analysis_status: string;
   consensus_risk_level: string;
   accounting_perspective: string;
   market_psychology_perspective: string;
@@ -15,9 +17,11 @@ interface StockConsensus {
 }
 
 async function getConsensusData(symbol: string): Promise<StockConsensus> {
-  const res = await fetch(`http://backend:8000/ticker/${symbol}`, {
-    next: { revalidate: 3600 },
-  });
+  const backendUrl = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:8000";
+  const res = await fetch(
+    `${backendUrl}/ticker/${encodeURIComponent(symbol)}`,
+    { cache: "no-store" },
+  );
   if (!res.ok) throw new Error(`Failed to pull analytical stream for ticker: ${symbol}`);
   return res.json();
 }
@@ -34,10 +38,10 @@ function parsePoints(text: string): string[] {
 }
 
 function scoreToLabel(score: number) {
-  if (score > 0.3) return { label: 'STRONGLY BULLISH', color: '#10b981' };
-  if (score > 0.1) return { label: 'BULLISH', color: '#34d399' };
-  if (score > -0.1) return { label: 'NEUTRAL', color: '#f59e0b' };
-  if (score > -0.3) return { label: 'BEARISH', color: '#f87171' };
+  if (score > 0.8) return { label: 'STRONGLY BULLISH', color: '#10b981' };
+  if (score > 0.6) return { label: 'BULLISH', color: '#34d399' };
+  if (score >= 0.4) return { label: 'NEUTRAL', color: '#f59e0b' };
+  if (score >= 0.2) return { label: 'BEARISH', color: '#f87171' };
   return { label: 'STRONGLY BEARISH', color: '#ef4444' };
 }
 
@@ -49,8 +53,7 @@ function riskStyle(risk: string) {
 }
 
 function confidencePct(score: number): number {
-  // Map score from [-1, 1] to [0, 100] with more nuance
-  return Math.min(100, Math.max(0, Math.round((score + 1) / 2 * 100)));
+  return Math.min(100, Math.max(0, Math.round(score * 100)));
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
@@ -61,8 +64,8 @@ export default async function TickerPage({ params }: { params: Promise<{ symbol:
 
   const sentiment = scoreToLabel(data.average_sentiment_score);
   const risk = riskStyle(data.consensus_risk_level);
-  const isBullish = data.average_sentiment_score > 0;
-  const confidence = confidencePct(data.average_sentiment_score);
+  const isBullish = data.average_sentiment_score >= 0.6;
+  const confidence = confidencePct(data.confidence_score);
   const bullPoints = parsePoints(data.the_bull_case);
   const bearPoints = parsePoints(data.the_bear_case);
   const syncTime = new Date(data.fetched_at).toLocaleString('en-US', {
@@ -521,7 +524,7 @@ export default async function TickerPage({ params }: { params: Promise<{ symbol:
           </div>
           <div className="topbar-right">
             <div className="live-dot" />
-            LIVE ANALYSIS
+            LATEST AVAILABLE
           </div>
         </div>
 
@@ -580,7 +583,7 @@ export default async function TickerPage({ params }: { params: Promise<{ symbol:
             <div className="score-item">
               <span className="score-key">Sentiment Vector</span>
               <span className="score-val" style={{ color: sentiment.color }}>
-                {data.average_sentiment_score >= 0 ? '+' : ''}{data.average_sentiment_score.toFixed(4)}
+                {data.average_sentiment_score.toFixed(4)}
               </span>
             </div>
             <div className="score-divider" />

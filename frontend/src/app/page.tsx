@@ -47,7 +47,9 @@ function loadHistory(): HistoryEntry[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 function saveHistory(entries: HistoryEntry[]) {
@@ -68,6 +70,7 @@ interface StockConsensus {
   ticker: string;
   aggregate_sentiment: string;
   average_sentiment_score: number;
+  confidence_score: number;
   accounting_perspective: string;
   market_psychology_perspective: string;
   the_bull_case: string;
@@ -75,6 +78,8 @@ interface StockConsensus {
   consensus_risk_level: string;
   key_news_sources: string[];
   raw_source_meta: Record<string, unknown>[];
+  analysis_status: "complete" | "partial" | "fallback" | "unavailable";
+  analysis_error: string | null;
   fetched_at: string;
 }
 
@@ -82,7 +87,10 @@ interface NormalisedConsensus {
   ticker: string;
   company_name: string;
   overall_sentiment: "bullish" | "bearish" | "neutral";
+  sentiment_score: number;
   confidence_score: number;
+  analysis_status: "complete" | "partial" | "fallback" | "unavailable";
+  fetched_at: string;
   bull_case: string[];
   bear_case: string[];
   risk_rating: "low" | "medium" | "high";
@@ -127,7 +135,10 @@ function normalise(raw: StockConsensus, companyName: string): NormalisedConsensu
     ticker: raw.ticker,
     company_name: companyName,
     overall_sentiment: normaliseSentiment(raw.aggregate_sentiment),
-    confidence_score: raw.average_sentiment_score,
+    sentiment_score: raw.average_sentiment_score,
+    confidence_score: raw.confidence_score,
+    analysis_status: raw.analysis_status,
+    fetched_at: raw.fetched_at,
     bull_case: splitIntoBullets(raw.the_bull_case),
     bear_case: splitIntoBullets(raw.the_bear_case),
     risk_rating: normaliseRisk(raw.consensus_risk_level),
@@ -138,28 +149,30 @@ function normalise(raw: StockConsensus, companyName: string): NormalisedConsensu
 }
 
 async function fetchPriceHistory(symbol: string): Promise<PricePoint[]> {
-  try {
-    const end = Math.floor(Date.now() / 1000);
-    const start = end - 60 * 60 * 24 * 90;
-    const url = `/api/yf/v8/finance/chart/${symbol}?interval=1d&period1=${start}&period2=${end}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    const result = data?.chart?.result?.[0];
-    if (!result) return [];
-    const timestamps: number[] = result.timestamp;
-    const closes: number[] = result.indicators.quote[0].close;
-    const volumes: number[] = result.indicators.quote[0].volume;
-    return timestamps.map((ts, i) => {
-      const price = closes[i] ?? 0;
-      const prev = closes[i - 1] ?? price;
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - 60 * 60 * 24 * 90;
+  const url = `/api/yf/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&period1=${start}&period2=${end}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Price provider returned ${res.status}`);
+  const data = await res.json();
+  const result = data?.chart?.result?.[0];
+  if (!result) throw new Error("Price history is unavailable for this ticker");
+  const timestamps: number[] = result.timestamp || [];
+  const closes: (number | null)[] = result.indicators?.quote?.[0]?.close || [];
+  const volumes: (number | null)[] = result.indicators?.quote?.[0]?.volume || [];
+  return timestamps
+    .map((ts, i) => {
+      const price = closes[i];
+      if (price == null || !Number.isFinite(price)) return null;
+      const previous = closes[i - 1] ?? price;
       return {
         date: new Date(ts * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-        price: parseFloat(price.toFixed(2)),
+        price: Number(price.toFixed(2)),
         volume: Math.round((volumes[i] ?? 0) / 1_000_000),
-        change: parseFloat(((price - prev) / prev * 100).toFixed(2)),
+        change: previous ? Number((((price - previous) / previous) * 100).toFixed(2)) : 0,
       };
-    }).filter(p => p.price > 0);
-  } catch { return []; }
+    })
+    .filter((point): point is PricePoint => point !== null);
 }
 
 function timeAgo(isoString: string): string {
@@ -284,7 +297,7 @@ function TrendingCards({ onSelect, darkMode }: { onSelect: (t: string) => void; 
       <div className="flex items-center gap-2 mb-3">
         <p className={`text-xs uppercase tracking-widest ${t.textFaint}`}>Trending Now</p>
         <span className={`text-[9px] px-1.5 py-0.5 rounded border ${darkMode ? "border-yellow-500/30 text-yellow-600 bg-yellow-500/5" : "border-yellow-400/40 text-yellow-600 bg-yellow-50"}`}>
-          Preview data — click to run live AI analysis
+          Preview data - click for latest available analysis
         </span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
@@ -380,9 +393,9 @@ function ChartTooltip({ active, payload, label, darkMode }: { active?: boolean; 
 
 // ─── Big Price Chart ──────────────────────────────────────────────────────────
 
-function BigPriceChart({ priceHistory, ticker, sentiment, sentimentScore, chartLoading, darkMode }: {
+function BigPriceChart({ priceHistory, ticker, sentiment, confidenceScore, chartLoading, chartError, darkMode }: {
   priceHistory: PricePoint[]; ticker: string; sentiment: "bullish" | "bearish" | "neutral";
-  sentimentScore: number; chartLoading: boolean; darkMode: boolean;
+  confidenceScore: number; chartLoading: boolean; chartError: string; darkMode: boolean;
 }) {
   const [activeView, setActiveView] = useState<"price" | "change" | "volume">("price");
   const t = darkMode ? darkTheme : lightTheme;
@@ -422,7 +435,7 @@ function BigPriceChart({ priceHistory, ticker, sentiment, sentimentScore, chartL
             <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: sentimentLineColor }} />
             <span className={`text-xs ${t.textFaint}`}>
               AI Sentiment: <span style={{ color: sentimentLineColor }} className="font-semibold capitalize">{sentiment}</span>
-              {" · "}<span style={{ color: sentimentLineColor }}>{Math.round(sentimentScore * 100)}% confidence</span>
+              {" · "}<span style={{ color: sentimentLineColor }}>{Math.round(confidenceScore * 100)}% confidence</span>
             </span>
           </div>
         </div>
@@ -446,7 +459,7 @@ function BigPriceChart({ priceHistory, ticker, sentiment, sentimentScore, chartL
         </div>
       ) : priceHistory.length === 0 ? (
         <div className="flex items-center justify-center h-64">
-          <p className={`text-sm ${t.textFaint}`}>Price data unavailable</p>
+          <p className={`text-sm ${t.textFaint}`}>{chartError || "Price data unavailable"}</p>
         </div>
       ) : (
         <div style={{ height: "280px", width: "100%" }}>
@@ -521,12 +534,12 @@ function BigPriceChart({ priceHistory, ticker, sentiment, sentimentScore, chartL
 // ─── AI Analysis Log ──────────────────────────────────────────────────────────
 
 const AI_STEPS = [
-  { label: "Connecting to backend", detail: "localhost:8000/ticker/{ticker}", duration: 400 },
-  { label: "Fetching live news sources", detail: "Scanning financial feeds & press releases", duration: 900 },
-  { label: "Running sentiment analysis", detail: "AI scoring each source independently", duration: 700 },
+  { label: "Connecting to backend", detail: "/api/v1/ticker/{ticker}", duration: 400 },
+  { label: "Fetching recent news sources", detail: "Reading latest available provider data", duration: 900 },
+  { label: "Preparing sentiment synthesis", detail: "Combining fundamentals, news, and price evidence", duration: 700 },
   { label: "Aggregating perspectives", detail: "Accounting + market psychology synthesis", duration: 600 },
   { label: "Computing bull / bear cases", detail: "Extracting key arguments from raw data", duration: 500 },
-  { label: "Finalising consensus", detail: "Weighted average across all sources", duration: 400 },
+  { label: "Validating structured consensus", detail: "Checking the final response schema", duration: 400 },
 ];
 
 function AIAnalysisLog({ ticker, darkMode }: { ticker: string; darkMode: boolean }) {
@@ -555,12 +568,12 @@ function AIAnalysisLog({ ticker, darkMode }: { ticker: string; darkMode: boolean
           <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin absolute inset-0" />
         </div>
         <div>
-          <p className={`text-sm font-semibold ${t.text}`}>Live AI Analysis Running</p>
+          <p className={`text-sm font-semibold ${t.text}`}>Consensus Analysis Running</p>
           <p className={`text-xs ${t.textFaint}`}>Ticker: {ticker}</p>
         </div>
         <div className="ml-auto flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-          <span className="text-[10px] text-green-500 font-medium">LIVE</span>
+          <span className="text-[10px] text-green-500 font-medium">PROCESSING</span>
         </div>
       </div>
       <div className="space-y-3">
@@ -665,7 +678,7 @@ function CompactSearchBar({
       <div className="ml-auto flex items-center gap-3 flex-shrink-0">
         <div className="flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-          <span className={`text-[9px] text-green-600 font-medium hidden sm:inline`}>Live</span>
+          <span className={`text-[9px] text-green-600 font-medium hidden sm:inline`}>Ready</span>
         </div>
         {/* Dark/Light toggle */}
         <button
@@ -693,15 +706,16 @@ export default function Home() {
   const [consensus, setConsensus] = useState<NormalisedConsensus | null>(null);
   const [priceHistory, setPriceHistory] = useState<PricePoint[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
-  const [searchHistory, setSearchHistory] = useState<HistoryEntry[]>([]);
-  const [darkMode, setDarkMode] = useState(true);
+  const [priceError, setPriceError] = useState("");
+  const [searchHistory, setSearchHistory] = useState<HistoryEntry[]>(() =>
+    typeof window === "undefined" ? [] : loadHistory(),
+  );
+  const [darkMode, setDarkMode] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return localStorage.getItem("sentinel_dark_mode") !== "false";
+  });
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem("sentinel_dark_mode");
-      if (stored !== null) setDarkMode(stored === "true");
-      setSearchHistory(loadHistory());
-    } catch {}
     const handler = (e: ErrorEvent) => setPageError(e.message || "Unknown error");
     window.addEventListener("error", handler);
     return () => window.removeEventListener("error", handler);
@@ -720,10 +734,11 @@ export default function Home() {
     setError("");
     setConsensus(null);
     setPriceHistory([]);
+    setPriceError("");
     if (overrideTicker) setTicker(overrideTicker);
 
     try {
-      const res = await fetch(`http://localhost:8000/ticker/${target}`);
+      const res = await fetch(`/api/v1/ticker/${encodeURIComponent(target)}`);
       if (!res.ok) {
         const data = await res.json().catch(() => ({ detail: "Server error" }));
         throw new Error(data.detail || `Server returned ${res.status}`);
@@ -741,10 +756,12 @@ export default function Home() {
       setSearchHistory(addToHistory(newEntry));
 
       setChartLoading(true);
-      fetchPriceHistory(target).then((history) => {
-        setPriceHistory(history);
-        setChartLoading(false);
-      });
+      fetchPriceHistory(target)
+        .then((history) => setPriceHistory(history))
+        .catch((priceErr: unknown) => {
+          setPriceError(priceErr instanceof Error ? priceErr.message : "Price data unavailable");
+        })
+        .finally(() => setChartLoading(false));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to fetch consensus. Is the backend running?");
     } finally {
@@ -912,7 +929,7 @@ export default function Home() {
               <div className="flex-1">
                 <p className="text-red-400 font-semibold text-sm mb-1">Analysis Failed</p>
                 <p className="text-red-400/70 text-sm">{error}</p>
-                <p className={`text-xs mt-2 ${t.textFaint}`}>Check that your backend server is running at localhost:8000</p>
+                <p className={`text-xs mt-2 ${t.textFaint}`}>Check the app logs with make logs</p>
               </div>
               <button onClick={() => setError("")} className="w-7 h-7 rounded-lg bg-red-500/10 hover:bg-red-500/20 flex items-center justify-center text-red-400 transition-colors text-xs">✕</button>
             </div>
@@ -928,7 +945,7 @@ export default function Home() {
               <div>
                 <h2 className={`text-2xl font-bold ${t.text}`}>{consensus.company_name}</h2>
                 <p className={`text-sm mt-0.5 ${t.textFaint}`}>
-                  {consensus.ticker} · analysed {timeAgo(searchHistory[0]?.searchedAt || new Date().toISOString())}
+                  {consensus.ticker} · updated {timeAgo(consensus.fetched_at)} - {consensus.analysis_status}
                 </p>
               </div>
               <button
@@ -944,8 +961,9 @@ export default function Home() {
               priceHistory={priceHistory}
               ticker={consensus.ticker}
               sentiment={consensus.overall_sentiment}
-              sentimentScore={consensus.confidence_score}
+              confidenceScore={consensus.confidence_score}
               chartLoading={chartLoading}
+              chartError={priceError}
               darkMode={darkMode}
             />
 
@@ -1101,11 +1119,13 @@ export default function Home() {
                   </span>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {consensus.key_news_sources.map((sourceUrl, i) => (
-                    <div
-                      key={i}
-                      onClick={() => window.open(sourceUrl, "_blank")}
-                      className={`rounded-xl p-4 cursor-pointer group transition-all border ${darkMode ? "bg-[#0e1015] border-[#1e2229] hover:border-green-500/30 hover:bg-[#0f1a12]" : "bg-[#ede8e1] border-[#d4cec6] hover:border-green-400/50 hover:bg-[#eaf2ec]"}`}
+                  {consensus.key_news_sources.map((sourceUrl) => (
+                    <a
+                      key={sourceUrl}
+                      href={sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`rounded-xl p-4 group transition-all border ${darkMode ? "bg-[#0e1015] border-[#1e2229] hover:border-green-500/30 hover:bg-[#0f1a12]" : "bg-[#ede8e1] border-[#d4cec6] hover:border-green-400/50 hover:bg-[#eaf2ec]"}`}
                     >
                       <div className="flex items-center gap-3">
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0 transition-colors ${darkMode ? "bg-[#1e2229] text-[#8b92a5] group-hover:bg-green-500/20 group-hover:text-green-400" : "bg-[#ddd8d0] text-[#5c5650] group-hover:bg-green-100 group-hover:text-green-600"}`}>
@@ -1118,7 +1138,7 @@ export default function Home() {
                           <p className={`text-[10px] truncate ${t.textFaint}`}>{sourceUrl}</p>
                         </div>
                       </div>
-                    </div>
+                    </a>
                   ))}
                 </div>
               </div>
