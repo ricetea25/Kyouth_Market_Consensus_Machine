@@ -11,7 +11,7 @@ services:
     environment:
       - ENVIRONMENT=development
       - WATCHFILES_FORCE_POLLING=true
-      - MOCK_EXTERNAL_APIs=false        # <-- Turn the mock OFF so we hit the real APIs
+      - MOCK_EXTERNAL_APIs=${MOCK_EXTERNAL_APIs:-false}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY}
 
@@ -25,7 +25,6 @@ services:
       - "3000:3000"
     volumes:
       - ./frontend/src:/app/src
-      - ./frontend/tailwind.config.js:/app/tailwind.config.js
       - ./frontend/postcss.config.mjs:/app/postcss.config.mjs
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000

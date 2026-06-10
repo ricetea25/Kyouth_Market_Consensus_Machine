@@ -1,149 +1,183 @@
-# Kyouth_Market_Consensus_Machine
+# Kyouth Market Consensus Machine
 
-An automated financial intelligence system that combines market fundamentals, live sentiment, and AI synthesis into a Bull vs. Bear consensus dashboard.
+A hackathon-oriented market intelligence dashboard that combines company fundamentals, recent news sentiment, daily price movement, and AI synthesis into a Bull vs. Bear consensus view.
 
-## Project Overview
+The project uses free-tier APIs, so data should be treated as the **latest available data**, not a real-time market feed or trading system.
 
-### Problem Statement
-Investors and analysts often need to correlate structured company data with unstructured market sentiment, but those signals are usually spread across multiple tools and sources. This project reduces that friction by turning raw market inputs into a single consensus view.
+## What It Does
 
-### Target Users
-- Retail investors who want a fast summary of a stock.
-- Analysts who want a lightweight synthesis layer over fundamentals and news.
-- Developers who need a local, containerized market-analysis demo.
+For a selected ticker, Sentinel:
 
-### System Goal
-Provide a simple web app that fetches market data for a ticker, runs AI-driven synthesis, stores the result, and presents a readable bullish/bearish consensus with supporting evidence.
-
-## System Architecture
-
-### Data Flow
+1. Checks the local analysis cache.
+2. Fetches company fundamentals, recent news, and daily prices from Alpha Vantage.
+3. Measures price reactions around available news publication dates.
+4. Sends the collected evidence to Gemini for structured synthesis.
+5. Stores the result in a host-mounted SQLite database.
+6. Displays sentiment, risk, bull/bear cases, sources, and price context in Next.js.
 
 ```mermaid
 flowchart LR
-  A[User enters ticker in frontend] --> B[Next.js frontend]
-  B --> C["FastAPI backend /ticker/{symbol}"]
-  C --> D[Validate ticker and check cache]
-  D --> E[Alpha Vantage fundamentals + news]
-  E --> F[Gemini synthesis]
-  F --> G[SQLite persistence]
-  G --> H[JSON response to frontend]
-  H --> I[Dashboard, chart, and detail view]
+  A[Next.js dashboard] --> B[FastAPI ticker endpoint]
+  B --> C[Status-aware cache]
+  C --> D[Alpha Vantage fundamentals]
+  C --> E[Alpha Vantage news]
+  C --> F[Alpha Vantage daily prices]
+  D --> G[Gemini synthesis]
+  E --> H[News-to-price calculations]
+  F --> H
+  H --> G
+  G --> I[SQLite consensus history]
+  I --> A
 ```
 
-Input: ticker symbol from the dashboard or ticker page.
+## Project Structure
 
-Processing: the backend validates the symbol, checks for cached results, fetches external market data when needed, sends a prompt to Gemini, then stores the structured result in SQLite.
+- `frontend/src/app/page.tsx`: main dashboard, search flow, price chart, and consensus display.
+- `frontend/src/app/ticker/[symbol]/page.tsx`: server-rendered ticker detail page.
+- `backend/src/main.py`: FastAPI routes.
+- `backend/src/services/pipeline.py`: provider calls, AI synthesis, and persistence.
+- `backend/src/services/market_movement.py`: daily-return and news-event calculations.
+- `backend/src/services/analysis_coordinator.py`: cache policy and duplicate-request protection.
+- `backend/src/models/stock.py`: persisted consensus model.
+- `backend/src/consensus.db`: SQLite database used by the running Docker backend.
 
-Output: the frontend renders a summary card, sentiment indicators, supporting bull/bear cases, source links, and historical data views.
+## Requirements
 
-### Module Breakdown
-- `frontend/src/app/page.tsx`: landing page, search flow, dashboard cards, and chart rendering.
-- `frontend/src/app/ticker/[symbol]/page.tsx`: detailed ticker view with sentiment summary and analysis sections.
-- `backend/src/main.py`: FastAPI routes, cache policy, and request orchestration.
-- `backend/src/services/pipeline.py`: Alpha Vantage fetches, Gemini synthesis, and database persistence.
-- `backend/src/models/stock.py`: SQLModel schema for stored consensus records.
-- `backend/src/database.py`: SQLite engine setup and session dependency.
-- `backend/src/config.py`: environment-backed settings.
+For the standard Docker workflow:
 
-## Setup & Installation
+- Docker with Docker Compose
+- Gemini API key
+- Alpha Vantage API key
 
-### Prerequisites
-- Docker and Docker Compose.
-- Python 3.14 tooling if you want to run the backend locally.
-- Node.js 22 if you want to run the frontend locally.
-- API keys for Gemini and Alpha Vantage.
+For optional local dependency setup:
 
-### Environment Setup
-Create a `.env` file in the repository root and add:
+- Python 3.14 and `uv`
+- Node.js 22 and npm
+
+For host-side database inspection:
+
+- `sqlite3`
+
+## Environment Setup
+
+Create the root `.env` file from the provided template:
+
+```bash
+cp .env.example .env
+```
+
+Add your free-tier API keys:
 
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
-ALPHA_VANTAGE_API_KEY=your_alpha_vantage_api_key_here
+GEMINI_API_KEY=your_gemini_api_key
+ALPHA_VANTAGE_API_KEY=your_alpha_vantage_api_key
+MOCK_EXTERNAL_APIS=false
 ```
 
-If you want live API calls in Docker, make sure the mock flag is disabled before starting the stack.
+Set `MOCK_EXTERNAL_APIS=true` when you want to demo the UI without spending API requests. Do not commit `.env`; it is ignored by Git.
 
-### Run With Docker
-Start the full system with:
+## Start The App
+
+Build and start both containers in the background:
 
 ```bash
-make run
+make start
 ```
 
-Stop it with:
+`make run` is kept as an alias for the same command.
+
+Useful commands:
 
 ```bash
-make stop
+make logs       # follow backend and frontend output
+make status     # show container status
+make restart    # rebuild/restart the app
+make stop       # stop the app
+make help       # list available commands
 ```
 
-Clean local caches and virtual environments with:
+Access points:
 
-```bash
-make clean
-```
+- Dashboard: [http://localhost:3000](http://localhost:3000)
+- Backend API: [http://localhost:8000](http://localhost:8000)
+- API documentation: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-### Local Development
-The Makefile also supports local dependency setup:
+## Optional Local Setup
+
+To install local dependencies for editor support and running checks outside Docker:
 
 ```bash
 make setup
 ```
 
-This installs backend dependencies with `uv`, installs frontend dependencies with `npm`, and creates a local `.env` from the example file when available.
+This runs `uv sync` in `backend`, runs `npm install` in `frontend`, and creates `.env` from `.env.example` when needed.
 
-### Access Points
-- Frontend Dashboard: http://localhost:3000
-- Backend API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+## Database
 
-## Features
+The backend mounts the entire host directory `backend/src` at `/app/src` inside the container. Because the configured database URL is `sqlite:///./src/consensus.db`, the application database is directly available on the host at:
 
-- Ticker search and consensus retrieval: users can request a stock symbol and get the latest stored or newly generated analysis.
-- Fundamental and sentiment harvesting: the backend queries Alpha Vantage for company overview and news sentiment data.
-- AI synthesis: Gemini converts raw market inputs into structured bull and bear perspectives.
-- Cached analysis records: recent results are reused for 24 hours to reduce API calls.
-- Historical ticker views: the API exposes both latest-per-ticker and full ticker history endpoints.
-- Frontend sentiment visualization: the UI normalizes backend responses into readable sentiment, risk, and chart views.
-- Local persistence: analysis records are saved in SQLite for later retrieval.
+```text
+backend/src/consensus.db
+```
 
-## Technical Decisions
+Open it from the project root without entering the container:
 
-- FastAPI was chosen for a small, explicit backend that keeps request orchestration easy to follow.
-- SQLModel and SQLite were used to minimize setup overhead and keep the demo self-contained.
-- The backend caches recent results for 24 hours to reduce repeated external calls and improve responsiveness.
-- The frontend uses Next.js with client-side charting to keep the dashboard interactive.
-- Gemini is used as the synthesis layer rather than trying to hard-code heuristics for sentiment combination.
-- The system favors a simple local Docker workflow over a more distributed production deployment, which keeps onboarding easier but limits durability and scale.
+```bash
+make db
+```
+
+Or inspect it directly:
+
+```bash
+sqlite3 backend/src/consensus.db
+```
+
+Common SQLite commands:
+
+```sql
+.tables
+.schema stockconsensus
+SELECT id, ticker, analysis_status, fetched_at
+FROM stockconsensus
+ORDER BY fetched_at DESC;
+```
+
+You can print the table schema without opening an interactive session:
+
+```bash
+make db-schema
+```
+
+Stopping or rebuilding the containers does not delete this database because it lives in the host workspace.
+
+## Cache And API Usage
+
+The application is intentionally conservative with free-tier calls:
+
+- Complete analyses are cached for 24 hours.
+- Successful local-AI fallback analyses are cached for 24 hours.
+- Partial analyses, such as rate-limited news or missing price data, are cached for 1 hour.
+- Unavailable analyses are not cached.
+- Concurrent requests for the same ticker share one pipeline execution in the current backend process.
+
+A fresh ticker analysis can make three Alpha Vantage requests: fundamentals, news, and daily prices. Requests are sequential to reduce free-tier throttling. Cached searches do not repeat these calls.
+
+## Analysis Status
+
+Each record includes an `analysis_status`:
+
+- `complete`: all expected provider data and Gemini synthesis succeeded.
+- `partial`: one or more provider inputs were unavailable or rate-limited.
+- `fallback`: provider data succeeded, but Ollama generated the synthesis after Gemini failed.
+- `unavailable`: both AI synthesis paths failed; a neutral placeholder was stored.
+
+Provider and synthesis errors are retained in `analysis_error` for debugging.
 
 ## Limitations
 
-- Chart Rendering Quirks: The frontend Recharts container can occasionally emit a width/height warning when measured before the layout completely settles. While the chart still renders successfully, the layout lifecycle needs hardening.
-
-- External API Bottlenecks: Alpha Vantage rate limits (especially on free tiers) can throttle live pipeline runs, even with sequential fetching and our 24-hour database caching strategy.
-
-- Single-Source Bias: Currently, the system relies exclusively on Alpha Vantage for both fundamental data and news sentiment. This creates a blind spot for "unofficial" retail market psychology.
-
-- LLM Context Limits & Hallucinations: While the pipeline processes up to 25 recent articles, massive news days could exceed optimal token windows. Furthermore, Gemini failures currently fall back to a generic, static analysis object—keeping the app alive but temporarily reducing the quality of the insights.
-
-- Database Concurrency: The project uses SQLite for ease of setup. While perfect for a local demo, SQLite locks the entire database during writes, which would cause bottlenecks if multiple users triggered the pipeline simultaneously in a production environment.
-
-## Future Improvements
-
-- Alternative Data Integration (Web Scraping): Expand the ingestion pipeline beyond official news APIs to include "alt-data" sources. Scraping subreddits (like r/WallStreetBets) or other social platforms will capture retail momentum, irrational exuberance, and non-official risk indicators, creating a much more accurate "Market Psychology" perspective.
-
-- Interactive "Wikipedia-Style" Glossary: Enhance the frontend UI by having the AI automatically identify and wrap complex financial jargon (e.g., "EBITDA", "Short Squeeze", "P/E Ratio") in hoverable tooltip components. This allows users to view dynamic, context-aware definitions without leaving the dashboard.
-
-- Rich Multi-Layered Data Visualization: Upgrade the existing Recharts sentiment graph by overlaying additional data points. Future iterations could plot trading volume, moving averages, or spikes in social media mentions directly against the price and sentiment trendlines.
-
-- Robust Production Infrastructure: Migrate from local SQLite to a robust PostgreSQL database using Alembic for automated schema migrations. Implement persistent Docker volumes to ensure data durability across container restarts.
-
-- Resilient AI Error Handling: Improve the AI fallback mechanism to provide partial insights (e.g., returning fundamental analysis even if the news sentiment extraction fails) rather than defaulting to a completely generic response.
-
-## Database Inspection
-
-The backend container includes `sqlite3`. The default database file is `consensus.db` in the backend working directory, so you can inspect it with:
-
-```bash
-docker exec -it <backend_container_name> sqlite3 /app/consensus.db
-```
+- This is a hackathon concept, not investment advice or a real-time trading platform.
+- Free-tier APIs can return delayed, incomplete, or rate-limited responses.
+- News-to-price calculations show association around publication dates, not proof that an article caused a price move.
+- Alpha Vantage is the primary external market-data source, so provider coverage and bias carry into the analysis.
+- SQLite and process-local ticker locks are appropriate for the current single-worker demo, not a distributed production deployment.
+- AI summaries can still be incomplete or incorrect and should be checked against their original sources.
