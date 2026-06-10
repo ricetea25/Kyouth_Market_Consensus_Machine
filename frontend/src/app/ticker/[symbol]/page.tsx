@@ -38,18 +38,18 @@ function parsePoints(text: string): string[] {
 }
 
 function scoreToLabel(score: number) {
-  if (score > 0.8) return { label: 'STRONGLY BULLISH', color: '#10b981' };
-  if (score > 0.6) return { label: 'BULLISH', color: '#34d399' };
-  if (score >= 0.4) return { label: 'NEUTRAL', color: '#f59e0b' };
-  if (score >= 0.2) return { label: 'BEARISH', color: '#f87171' };
-  return { label: 'STRONGLY BEARISH', color: '#ef4444' };
+  if (score > 0.8) return { label: 'STRONGLY BULLISH', color: '#15803d' };
+  if (score > 0.6) return { label: 'BULLISH', color: '#16a34a' };
+  if (score >= 0.4) return { label: 'NEUTRAL', color: '#b45309' };
+  if (score >= 0.2) return { label: 'BEARISH', color: '#dc2626' };
+  return { label: 'STRONGLY BEARISH', color: '#b91c1c' };
 }
 
 function riskStyle(risk: string) {
   const r = risk?.toLowerCase();
-  if (r === 'low') return { bg: 'rgba(16,185,129,0.1)', border: 'rgba(16,185,129,0.3)', color: '#10b981' };
-  if (r === 'medium') return { bg: 'rgba(245,158,11,0.1)', border: 'rgba(245,158,11,0.3)', color: '#f59e0b' };
-  return { bg: 'rgba(239,68,68,0.1)', border: 'rgba(239,68,68,0.3)', color: '#ef4444' };
+  if (r === 'low') return { bg: 'rgba(16,185,129,0.1)', border: 'rgba(16,185,129,0.3)', color: '#15803d' };
+  if (r === 'medium') return { bg: 'rgba(245,158,11,0.1)', border: 'rgba(245,158,11,0.3)', color: '#b45309' };
+  return { bg: 'rgba(239,68,68,0.1)', border: 'rgba(239,68,68,0.3)', color: '#b91c1c' };
 }
 
 function confidencePct(score: number): number {
@@ -79,24 +79,26 @@ export default async function TickerPage({ params }: { params: Promise<{ symbol:
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Bebas+Neue&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap');
 
         :root {
-          --bg: #0a0a0b;
-          --surface: #111113;
-          --surface-2: #18181c;
-          --surface-3: #1e1e24;
-          --border: #2a2a30;
-          --border-bright: #3a3a42;
-          --amber: #f59e0b;
-          --amber-dim: #92600a;
-          --text: #f0f0f2;
-          --text-dim: #b0b0b8;
-          --text-muted: #606068;
-          --green: #10b981;
-          --red: #ef4444;
+          --bg: #f6f3ee;
+          --surface: rgba(255,255,255,0.92);
+          --surface-2: #f4efe8;
+          --surface-3: #e4ded5;
+          --border: #ddd7ce;
+          --border-bright: #c8c0b6;
+          --amber: #15803d;
+          --amber-dim: #166534;
+          --text: #1c1917;
+          --text-dim: #57534e;
+          --text-muted: #8a8178;
+          --green: #15803d;
+          --red: #b91c1c;
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-          background: var(--bg);
+          background:
+            radial-gradient(circle at 50% -20%, rgba(34,197,94,0.10), transparent 36rem),
+            var(--bg);
           color: var(--text);
           font-family: 'IBM Plex Sans', sans-serif;
           min-height: 100vh;
@@ -205,8 +207,9 @@ export default async function TickerPage({ params }: { params: Promise<{ symbol:
         /* ── Hero card ── */
         .hero-card {
           background: var(--surface);
+          box-shadow: 0 18px 50px rgba(58,48,38,0.07);
           border: 1px solid var(--border);
-          border-radius: 6px;
+          border-radius: 16px;
           padding: 28px 32px;
           margin-bottom: 20px;
         }
@@ -355,19 +358,19 @@ export default async function TickerPage({ params }: { params: Promise<{ symbol:
 
         /* ── Bull / Bear cards ── */
         .bull-card, .bear-card {
-          border-radius: 6px;
+          border-radius: 16px;
           border: 1px solid;
           padding: 24px;
         }
 
         .bull-card {
-          background: rgba(16,185,129,0.04);
-          border-color: rgba(16,185,129,0.2);
+          background: #f0f8f2;
+          border-color: #c9dfce;
         }
 
         .bear-card {
-          background: rgba(239,68,68,0.04);
-          border-color: rgba(239,68,68,0.2);
+          background: #fff4f3;
+          border-color: #e6ceca;
         }
 
         .case-header {
@@ -433,8 +436,9 @@ export default async function TickerPage({ params }: { params: Promise<{ symbol:
 
         .perspective-card {
           background: var(--surface);
+          box-shadow: 0 12px 36px rgba(58,48,38,0.05);
           border: 1px solid var(--border);
-          border-radius: 6px;
+          border-radius: 16px;
           padding: 24px;
         }
 
@@ -471,8 +475,9 @@ export default async function TickerPage({ params }: { params: Promise<{ symbol:
         /* ── Metadata strip ── */
         .meta-strip {
           background: var(--surface);
+          box-shadow: 0 12px 36px rgba(58,48,38,0.05);
           border: 1px solid var(--border);
-          border-radius: 6px;
+          border-radius: 16px;
           padding: 16px 24px;
           display: flex;
           align-items: center;

@@ -205,20 +205,20 @@ const darkTheme = {
 };
 
 const lightTheme = {
-  bg: "bg-[#f0ebe4]",
-  card: "bg-[#f5f0ea] border-[#ddd8d0]",
-  cardHover: "hover:border-green-500/40 hover:shadow-[0_0_20px_rgba(34,197,94,0.08)]",
-  text: "text-[#1a1814]",
-  textMuted: "text-[#5c5650]",
-  textFaint: "text-[#9c9690]",
-  input: "bg-[#ede8e1] border-[#d4cec6] text-[#1a1814] placeholder-[#9c9690]",
-  inputFocus: "focus:border-green-600/50",
-  bullBg: "bg-[#eaf2ec] border-[#c8deca]",
-  bearBg: "bg-[#f2eaea] border-[#dec8c8]",
-  skeletonBase: "bg-[#d8d3cc]/80",
-  skeletonShimmer: "bg-gradient-to-r from-[#d8d3cc]/80 via-[#e0dbd4]/60 to-[#d8d3cc]/80",
-  divider: "border-[#d4cec6]",
-  navbar: "bg-[#f0ebe4]/95 border-[#d4cec6]",
+  bg: "bg-[#f6f3ee]",
+  card: "bg-white/90 border-[#ded8cf] shadow-[0_12px_36px_rgba(58,48,38,0.06)]",
+  cardHover: "hover:border-green-500/45 hover:shadow-[0_16px_42px_rgba(34,197,94,0.10)]",
+  text: "text-[#1c1917]",
+  textMuted: "text-[#57534e]",
+  textFaint: "text-[#8a8178]",
+  input: "bg-white/90 border-[#d6d0c7] text-[#1c1917] placeholder-[#8a8178] shadow-sm",
+  inputFocus: "focus:border-green-600/60 focus:ring-4 focus:ring-green-500/10",
+  bullBg: "bg-[#f0f8f2] border-[#c9dfce] shadow-[0_12px_32px_rgba(22,101,52,0.05)]",
+  bearBg: "bg-[#fff4f3] border-[#e6ceca] shadow-[0_12px_32px_rgba(185,28,28,0.04)]",
+  skeletonBase: "bg-[#ddd7cf]/80",
+  skeletonShimmer: "bg-gradient-to-r from-[#ddd7cf]/80 via-[#ebe6df]/70 to-[#ddd7cf]/80",
+  divider: "border-[#d8d2c9]",
+  navbar: "bg-[#f8f5f0]/95 border-[#d8d2c9] shadow-sm",
 };
 
 // ─── Info Tooltip ─────────────────────────────────────────────────────────────
@@ -711,8 +711,8 @@ export default function Home() {
     typeof window === "undefined" ? [] : loadHistory(),
   );
   const [darkMode, setDarkMode] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return localStorage.getItem("sentinel_dark_mode") !== "false";
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("sentinel_dark_mode") === "true";
   });
 
   useEffect(() => {
@@ -772,11 +772,17 @@ export default function Home() {
   const t = darkMode ? darkTheme : lightTheme;
   const hasSearched = consensus !== null || loading;
 
-  const sentimentColor = (s: "bullish" | "bearish" | "neutral") =>
-    s === "bullish" ? "text-green-400" : s === "bearish" ? "text-red-400" : "text-yellow-400";
+  const sentimentColor = (s: "bullish" | "bearish" | "neutral") => {
+    if (s === "bullish") return darkMode ? "text-green-400" : "text-green-700";
+    if (s === "bearish") return darkMode ? "text-red-400" : "text-red-700";
+    return darkMode ? "text-yellow-400" : "text-amber-700";
+  };
 
-  const riskColor = (r: "low" | "medium" | "high") =>
-    r === "low" ? "text-green-400" : r === "high" ? "text-red-400" : "text-yellow-400";
+  const riskColor = (r: "low" | "medium" | "high") => {
+    if (r === "low") return darkMode ? "text-green-400" : "text-green-700";
+    if (r === "high") return darkMode ? "text-red-400" : "text-red-700";
+    return darkMode ? "text-yellow-400" : "text-amber-700";
+  };
 
   if (pageError) return <ErrorPage message={pageError} onReset={() => setPageError("")} darkMode={darkMode} />;
 
@@ -801,10 +807,12 @@ export default function Home() {
           <div className="absolute top-4 right-4 z-20 flex items-center gap-3">
             <div className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-              <span className="text-[9px] text-green-500 font-medium">Live Analysis</span>
+              <span className={`text-[9px] font-medium `}>Latest available data</span>
             </div>
             <button
               onClick={toggleDark}
+              aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+              title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
               className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all border ${darkMode ? "bg-[#1e2229]/80 border-[#1e2229] text-[#8b92a5] hover:text-green-400 hover:border-green-500/30" : "bg-white/80 border-[#d4cec6] text-[#5c5650] hover:text-green-600 hover:border-green-400"} backdrop-blur-sm`}
             >
               {darkMode ? (
