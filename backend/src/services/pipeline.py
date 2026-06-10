@@ -152,19 +152,47 @@ async def run_market_pipeline(
         )
         ai_analysis: MarketAnalysis = response.parsed
 
-    except Exception as ai_error:
-        print(f"⚠️ AI Synthesis Failed for {clean_ticker}: {str(ai_error)}")
+    #except Exception as ai_error:
+        #print(f"⚠️ AI Synthesis Failed for {clean_ticker}: {str(ai_error)}")
         # Generate a safe, structured fallback so the app doesn't crash
-        ai_analysis = MarketAnalysis(
-            aggregate_sentiment="DATA UNAVAILABLE",
-            average_sentiment_score=0.0,
-            consensus_risk_level="UNKNOWN",
-            accounting_perspective="AI processing failed. Unable to synthesize fundamentals at this time.",
-            market_psychology_perspective="AI processing failed. Unable to synthesize news sentiment.",
-            key_news_sources=[],
-            the_bull_case="Analysis temporarily unavailable.",
-            the_bear_case="Analysis temporarily unavailable."
-        )
+        #ai_analysis = MarketAnalysis(
+            #aggregate_sentiment="DATA UNAVAILABLE",
+            #average_sentiment_score=0.0,
+            #consensus_risk_level="UNKNOWN",
+            #accounting_perspective="AI processing failed. Unable to synthesize fundamentals at this time.",
+            #market_psychology_perspective="AI processing failed. Unable to synthesize news sentiment.",
+            #key_news_sources=[],
+            #the_bull_case="Analysis temporarily unavailable.",
+            #the_bear_case="Analysis temporarily unavailable."
+        #)
+    except Exception as ai_error:
+        print(f"⚠️ Gemini Failed for {clean_ticker}: {str(ai_error)}")
+        print(f"🦙 Attempting Ollama llama3.1 fallback...")
+        try:
+            ollama_response = await asyncio.to_thread(
+                lambda: __import__('ollama').generate(
+                    model="llama3.1",
+                    prompt=prompt + "\n\nRespond ONLY in valid JSON matching this structure: {aggregate_sentiment, average_sentiment_score (0.0-1.0), consensus_risk_level, accounting_perspective, market_psychology_perspective, key_news_sources (list), the_bull_case, the_bear_case}",
+                )
+            )
+            import json
+            raw_text = ollama_response['response']
+            clean_json = raw_text[raw_text.find('{'):raw_text.rfind('}')+1]
+            parsed = json.loads(clean_json)
+            ai_analysis = MarketAnalysis(**parsed)
+            print(f"✅ Ollama fallback succeeded for {clean_ticker}")
+        except Exception as ollama_error:
+            print(f"⚠️ Ollama fallback also failed: {str(ollama_error)}")
+            ai_analysis = MarketAnalysis(
+                aggregate_sentiment="DATA UNAVAILABLE",
+                average_sentiment_score=0.0,
+                consensus_risk_level="UNKNOWN",
+                accounting_perspective="AI processing failed. Unable to synthesize fundamentals at this time.",
+                market_psychology_perspective="AI processing failed. Unable to synthesize news sentiment.",
+                key_news_sources=[],
+                the_bull_case="Analysis temporarily unavailable.",
+                the_bear_case="Analysis temporarily unavailable."
+            )
 
     # =================================================================
     # PHASE 3: DATABASE MAPPING & PERSISTENCE
