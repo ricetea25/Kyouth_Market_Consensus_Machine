@@ -14,6 +14,10 @@ def init_db():
         column["name"] for column in inspect(engine).get_columns("stockconsensus")
     }
     migrations = {
+        "confidence_score": (
+            "ALTER TABLE stockconsensus "
+            "ADD COLUMN confidence_score FLOAT NOT NULL DEFAULT 0.5"
+        ),
         "market_movement": (
             "ALTER TABLE stockconsensus "
             "ADD COLUMN market_movement JSON NOT NULL DEFAULT '{}'"

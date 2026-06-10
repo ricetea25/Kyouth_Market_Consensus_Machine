@@ -5,7 +5,6 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
 from google import genai
 from google.genai import types
 from sqlmodel import Session
@@ -16,31 +15,12 @@ from src.schemas.ai.market_analysis import (
     MarketAnalysis,
     build_unavailable_analysis,
 )
+from src.services.market_data import fetch_market_data
 from src.services.market_movement import build_market_movement
 
 
 ai_client = genai.Client(api_key=settings.gemini_api_key)
 TICKER_PATTERN = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
-ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
-
-
-def _provider_message(payload: dict[str, Any]) -> str | None:
-    for key in ("Error Message", "Information", "Note"):
-        if payload.get(key):
-            return str(payload[key])
-    return None
-
-
-async def _fetch_alpha_vantage(
-    client: httpx.AsyncClient,
-    params: dict[str, str],
-) -> dict[str, Any]:
-    response = await client.get(ALPHA_VANTAGE_URL, params=params)
-    response.raise_for_status()
-    payload = response.json()
-    if not isinstance(payload, dict):
-        raise ValueError("Market-data provider returned an invalid response.")
-    return payload
 
 
 def _store_record(
@@ -79,6 +59,7 @@ async def run_market_pipeline(
             "ticker": clean_ticker,
             "aggregate_sentiment": "Strong Bullish",
             "average_sentiment_score": 0.92,
+            "confidence_score": 0.88,
             "consensus_risk_level": "Low",
             "accounting_perspective": (
                 "Strong balance sheet with 45% year-over-year revenue growth and "
@@ -124,77 +105,17 @@ async def run_market_pipeline(
         }
         return _store_record(session, pipeline_data, existing_record)
 
-    api_key = settings.alpha_vantage_api_key
-    fundamental_params = {
-        "function": "OVERVIEW",
-        "symbol": clean_ticker,
-        "apikey": api_key,
-    }
-    news_params = {
-        "function": "NEWS_SENTIMENT",
-        "tickers": clean_ticker,
-        "sort": "LATEST",
-        "limit": "25",
-        "apikey": api_key,
-    }
-    price_params = {
-        "function": "TIME_SERIES_DAILY",
-        "symbol": clean_ticker,
-        "outputsize": "compact",
-        "apikey": api_key,
-    }
-
-    raw_fundamentals: dict[str, Any] = {}
-    raw_news: dict[str, Any] = {}
-    raw_prices: dict[str, Any] = {}
-    provider_errors = []
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            raw_fundamentals = await _fetch_alpha_vantage(client, fundamental_params)
-            provider_message = _provider_message(raw_fundamentals)
-            if "Error Message" in raw_fundamentals or not raw_fundamentals:
-                raise ValueError(
-                    f"Invalid ticker symbol: '{clean_ticker}' does not exist or has no data."
-                )
-            if provider_message:
-                provider_errors.append(f"fundamentals: {provider_message}")
-        except ValueError:
-            raise
-        except Exception as error:
-            provider_errors.append(f"fundamentals: {error}")
-
-        await asyncio.sleep(1.5)
-        try:
-            raw_news = await _fetch_alpha_vantage(client, news_params)
-            if provider_message := _provider_message(raw_news):
-                provider_errors.append(f"news: {provider_message}")
-                raw_news = {}
-            elif not raw_news.get("feed"):
-                provider_errors.append("news: no articles were returned")
-                raw_news = {}
-        except Exception as error:
-            provider_errors.append(f"news: {error}")
-
-        await asyncio.sleep(1.5)
-        try:
-            raw_prices = await _fetch_alpha_vantage(client, price_params)
-            if provider_message := _provider_message(raw_prices):
-                provider_errors.append(f"prices: {provider_message}")
-                raw_prices = {}
-            elif not raw_prices.get("Time Series (Daily)"):
-                provider_errors.append("prices: no daily history was returned")
-                raw_prices = {}
-        except Exception as error:
-            provider_errors.append(f"prices: {error}")
-
+    market_data = await fetch_market_data(
+        clean_ticker,
+        settings.alpha_vantage_api_key,
+    )
     market_movement = build_market_movement(
-        raw_prices,
-        raw_news,
+        market_data.prices,
+        market_data.news,
         clean_ticker,
     )
-    if provider_errors:
-        market_movement["provider_errors"] = provider_errors
+    if market_data.errors:
+        market_movement["provider_errors"] = market_data.errors
 
     prompt = (
         "You are a market risk analyst. Analyze company fundamentals, news sentiment, "
@@ -203,14 +124,14 @@ async def run_market_pipeline(
         "Base the market psychology and bull/bear cases on the measured reactions when "
         "they are available.\n\n"
         f"Asset: {clean_ticker}\n\n"
-        f"--- FUNDAMENTALS ---\n{str(raw_fundamentals)[:12000]}\n\n"
-        f"--- NEWS ---\n{str(raw_news)[:12000]}\n\n"
+        f"--- FUNDAMENTALS ---\n{str(market_data.fundamentals)[:12000]}\n\n"
+        f"--- NEWS ---\n{str(market_data.news)[:12000]}\n\n"
         f"--- NEWS-TO-PRICE MOVEMENT ---\n{str(market_movement)[:10000]}"
     )
 
-    data_is_partial = bool(provider_errors)
+    data_is_partial = market_data.is_partial
     analysis_status = "partial" if data_is_partial else "complete"
-    analysis_error = "; ".join(provider_errors) or None
+    analysis_error = "; ".join(market_data.errors) or None
     try:
         response = await ai_client.aio.models.generate_content(
             model="gemini-2.5-flash",
@@ -234,9 +155,9 @@ async def run_market_pipeline(
                     model="llama3.1",
                     prompt=(
                         prompt + "\n\nRespond only with valid JSON matching: "
-                        "{aggregate_sentiment, average_sentiment_score (0.0-1.0), "
+                        "{aggregate_sentiment, average_sentiment_score (0.0-1.0), confidence_score (0.0-1.0), "
                         "consensus_risk_level, accounting_perspective, "
-                        "market_psychology_perspective, key_news_sources (list), "
+                        "market_psychology_perspective, "
                         "the_bull_case, the_bear_case}"
                     ),
                 )
@@ -255,16 +176,17 @@ async def run_market_pipeline(
         "ticker": clean_ticker,
         "aggregate_sentiment": ai_analysis.aggregate_sentiment,
         "average_sentiment_score": ai_analysis.average_sentiment_score,
+        "confidence_score": ai_analysis.confidence_score,
         "accounting_perspective": ai_analysis.accounting_perspective,
         "market_psychology_perspective": ai_analysis.market_psychology_perspective,
-        "key_news_sources": ai_analysis.key_news_sources,
+        "key_news_sources": market_data.source_urls(),
         "the_bull_case": ai_analysis.the_bull_case,
         "the_bear_case": ai_analysis.the_bear_case,
         "consensus_risk_level": ai_analysis.consensus_risk_level,
         "market_movement": market_movement,
         "analysis_status": analysis_status,
         "analysis_error": analysis_error,
-        "raw_source_meta": [raw_fundamentals, raw_news],
+        "raw_source_meta": market_data.metadata(),
         "fetched_at": datetime.now(timezone.utc),
     }
     return _store_record(session, pipeline_data, existing_record)
