@@ -1,146 +1,216 @@
-import os
 import asyncio
+import json
+import os
+import re
 from datetime import datetime, timezone
-import httpx
-from sqlmodel import Session
+from typing import Any
 
+import httpx
 from google import genai
 from google.genai import types
+from sqlmodel import Session
 
+from src.config import settings
 from src.models.stock import StockConsensus
-from src.schemas.ai.market_analysis import MarketAnalysis
-from src.config import settings 
+from src.schemas.ai.market_analysis import (
+    MarketAnalysis,
+    build_unavailable_analysis,
+)
+from src.services.market_movement import build_market_movement
 
-import re
 
-# 1. Initialize the patched OpenAI client with Instructor
-# This wraps the standard OpenAI client with Pydantic validation capabilities
 ai_client = genai.Client(api_key=settings.gemini_api_key)
+TICKER_PATTERN = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
+ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
 
-TICKER_PATTERN = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
+
+def _provider_message(payload: dict[str, Any]) -> str | None:
+    for key in ("Error Message", "Information", "Note"):
+        if payload.get(key):
+            return str(payload[key])
+    return None
+
+
+async def _fetch_alpha_vantage(
+    client: httpx.AsyncClient,
+    params: dict[str, str],
+) -> dict[str, Any]:
+    response = await client.get(ALPHA_VANTAGE_URL, params=params)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Market-data provider returned an invalid response.")
+    return payload
+
+
+def _store_record(
+    session: Session,
+    pipeline_data: dict[str, Any],
+    existing_record: StockConsensus | None = None,
+) -> StockConsensus:
+    if existing_record:
+        for key, value in pipeline_data.items():
+            setattr(existing_record, key, value)
+        db_record = existing_record
+    else:
+        db_record = StockConsensus(**pipeline_data)
+        session.add(db_record)
+
+    session.commit()
+    session.refresh(db_record)
+    return db_record
+
 
 async def run_market_pipeline(
-    ticker: str, 
-    session: Session, 
-    existing_record: StockConsensus | None = None
+    ticker: str,
+    session: Session,
+    existing_record: StockConsensus | None = None,
 ) -> StockConsensus:
-    
     clean_ticker = ticker.upper().strip()
-    
     if not clean_ticker or not TICKER_PATTERN.match(clean_ticker):
         raise ValueError(
             f"Invalid ticker format: '{clean_ticker}'. "
-            f"Please use a standard symbol (e.g., 'AAPL', 'GOOGL', or 'BRK.B')."
+            "Please use a standard symbol (e.g., 'AAPL', 'GOOGL', or 'BRK.B')."
         )
 
-    # =================================================================
-    # MOCK BYPASS (For Local Testing without hitting API limits)
-    # =================================================================
     if os.getenv("MOCK_EXTERNAL_APIs") == "true":
-        print(f"[MOCK] Bypassing dual Alpha Vantage + AI calls for {clean_ticker}...")
-        
+        print(f"[MOCK] Bypassing Alpha Vantage and AI calls for {clean_ticker}...")
         pipeline_data = {
             "ticker": clean_ticker,
-            "aggregate_sentiment": "STRONG BULLISH",
+            "aggregate_sentiment": "Strong Bullish",
             "average_sentiment_score": 0.92,
-            "consensus_risk_level": "LOW",
-
-            "accounting_perspective": "Strong balance sheet with a 45% YoY revenue growth. Cash-to-debt ratio remains industry-leading, signaling high resilience against market volatility.",
-    		"market_psychology_perspective": "High social volume on X and Reddit indicates a 'fear of missing out' (FOMO) cycle, paired with institutional heavy-buying accumulation patterns.",
-            
-			"key_news_sources": [
-				"https://www.reuters.com/finance/markets/tech-sector-update",
-				"https://www.bloomberg.com/news/articles/2026-06-04/market-sentiment-analysis",
-				"https://investorplace.com/2026/06/why-nvda-is-leading-the-ai-race"
-			],
-            
-			"accounting_source_url": f"https://www.sec.gov/cgi-bin/browse-edgar?CIK={clean_ticker}&action=getcompany",
-
-            "the_bull_case": "Fundamentals show low debt and low P/E, while active news cycles show heavy retail accumulation.",
-            "the_bear_case": "Extremely high social buzz could signal a short-term overbought peak.",
-            
-			"raw_source_meta": [
-				{"provider": "SEC-EDGAR", "status": "200 OK", "data_points": 14},
-				{"provider": "AlphaVantage-News", "status": "200 OK", "article_count": 25}
-			],
-            "fetched_at": datetime.now(timezone.utc)
+            "consensus_risk_level": "Low",
+            "accounting_perspective": (
+                "Strong balance sheet with 45% year-over-year revenue growth and "
+                "an industry-leading cash-to-debt ratio."
+            ),
+            "market_psychology_perspective": (
+                "High social volume indicates a momentum cycle alongside "
+                "institutional accumulation."
+            ),
+            "key_news_sources": [
+                "https://www.reuters.com/finance/markets/tech-sector-update",
+                "https://www.bloomberg.com/news/articles/market-sentiment-analysis",
+            ],
+            "the_bull_case": (
+                "Fundamentals are resilient and recent news events were followed by "
+                "positive price reactions."
+            ),
+            "the_bear_case": (
+                "Elevated attention and momentum may leave the stock vulnerable to "
+                "a short-term reversal."
+            ),
+            "market_movement": {
+                "status": "mock",
+                "latest_price": 192.40,
+                "latest_price_date": datetime.now(timezone.utc).date().isoformat(),
+                "trailing_returns": {"1d": 1.2, "5d": 3.8, "20d": 7.1},
+                "news_reaction_summary": {
+                    "events_measured": 3,
+                    "average_1d_return_pct": 1.4,
+                    "average_5d_return_pct": 3.2,
+                    "positive_1d_reaction_ratio": 0.67,
+                },
+                "news_reactions": [],
+            },
+            "analysis_status": "complete",
+            "analysis_error": None,
+            "raw_source_meta": [
+                {"provider": "AlphaVantage-Fundamentals", "status": "mock"},
+                {"provider": "AlphaVantage-News", "status": "mock"},
+                {"provider": "AlphaVantage-Prices", "status": "mock"},
+            ],
+            "fetched_at": datetime.now(timezone.utc),
         }
+        return _store_record(session, pipeline_data, existing_record)
 
-        if existing_record:
-            for key, value in pipeline_data.items():
-                setattr(existing_record, key, value)
-            db_record = existing_record
-        else:
-            db_record = StockConsensus(**pipeline_data)
-            session.add(db_record)
-
-        session.commit()
-        session.refresh(db_record)
-        return db_record
-
-    # =================================================================
-    # PHASE 1: DUAL CONCURRENT DATA HARVESTING (Fundamentals + News)
-    # =================================================================
-    # Grabbing your Alpha Vantage key from settings
-    av_api_key = getattr(settings, "alpha_vantage_api_key", "YOUR_KEY_HERE")
-    alpha_vantage_url = "https://www.alphavantage.co/query"
-    
-    # 1A. Setup Fundamental Data Parameters
+    api_key = settings.alpha_vantage_api_key
     fundamental_params = {
         "function": "OVERVIEW",
         "symbol": clean_ticker,
-        "apikey": av_api_key
+        "apikey": api_key,
     }
-    
-    # 1B. Setup News & Sentiment Data Parameters
     news_params = {
         "function": "NEWS_SENTIMENT",
         "tickers": clean_ticker,
         "sort": "LATEST",
-        "limit": "25",  # 25 articles provides a solid context window without overloading tokens
-        "apikey": av_api_key
+        "limit": "25",
+        "apikey": api_key,
+    }
+    price_params = {
+        "function": "TIME_SERIES_DAILY",
+        "symbol": clean_ticker,
+        "outputsize": "compact",
+        "apikey": api_key,
     }
 
-    async with httpx.AsyncClient() as client:
-        try:
-            # 1. Fetch Fundamentals first
-            fundamental_res = await client.get(alpha_vantage_url, params=fundamental_params)
-            
-            # 2. Pause for 1.5 seconds to bypass the Alpha Vantage rate limiter
-            await asyncio.sleep(1.5) 
-            
-            # 3. Fetch News second
-            news_res = await client.get(alpha_vantage_url, params=news_params)
-            
-            raw_fundamentals = fundamental_res.json() if fundamental_res.status_code == 200 else {}
-            raw_news = news_res.json() if news_res.status_code == 200 else {}
-            
-            # Catch potential free-tier throttling messages
-            if "Information" in raw_fundamentals or "Information" in raw_news:
-                print("⚠️ Alpha Vantage warning: Free-tier rate limit hit anyway.")
-                
-            if "Error Message" in raw_fundamentals or len(raw_fundamentals.keys()) == 0:
-                raise ValueError(f"Invalid ticker symbol: '{clean_ticker}' does not exist or has no data.")
-                
-        except Exception as e:
-            if isinstance(e, ValueError):
-                raise e
-            print(f"Failed harvesting external market data: {str(e)}")
-            raw_fundamentals, raw_news = {}, {}
+    raw_fundamentals: dict[str, Any] = {}
+    raw_news: dict[str, Any] = {}
+    raw_prices: dict[str, Any] = {}
+    provider_errors = []
 
-    # =================================================================
-    # PHASE 2: STRUCTURED AI HYBRID SYNTHESIS via Instructor
-    # =================================================================
-	 
-    prompt = (
-        "You are an elite hedge-fund risk officer and market analyst. "
-        "Your objective is to analyze a company's hard balance sheet fundamentals "
-        "alongside its live public news sentiment to form a complete consensus overview.\n\n"
-        f"Synthesize market metrics for asset: {clean_ticker}.\n\n"
-        f"--- PERSPECTIVE A: FUNDAMENTAL FINANCIAL ACCOUNTING ---\n{str(raw_fundamentals)}\n\n"
-        f"--- PERSPECTIVE B: MARKET PSYCHOLOGY & LIVE HEADLINES ---\n{str(raw_news)[:12000]}" 
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            raw_fundamentals = await _fetch_alpha_vantage(client, fundamental_params)
+            provider_message = _provider_message(raw_fundamentals)
+            if "Error Message" in raw_fundamentals or not raw_fundamentals:
+                raise ValueError(
+                    f"Invalid ticker symbol: '{clean_ticker}' does not exist or has no data."
+                )
+            if provider_message:
+                provider_errors.append(f"fundamentals: {provider_message}")
+        except ValueError:
+            raise
+        except Exception as error:
+            provider_errors.append(f"fundamentals: {error}")
+
+        await asyncio.sleep(1.5)
+        try:
+            raw_news = await _fetch_alpha_vantage(client, news_params)
+            if provider_message := _provider_message(raw_news):
+                provider_errors.append(f"news: {provider_message}")
+                raw_news = {}
+            elif not raw_news.get("feed"):
+                provider_errors.append("news: no articles were returned")
+                raw_news = {}
+        except Exception as error:
+            provider_errors.append(f"news: {error}")
+
+        await asyncio.sleep(1.5)
+        try:
+            raw_prices = await _fetch_alpha_vantage(client, price_params)
+            if provider_message := _provider_message(raw_prices):
+                provider_errors.append(f"prices: {provider_message}")
+                raw_prices = {}
+            elif not raw_prices.get("Time Series (Daily)"):
+                provider_errors.append("prices: no daily history was returned")
+                raw_prices = {}
+        except Exception as error:
+            provider_errors.append(f"prices: {error}")
+
+    market_movement = build_market_movement(
+        raw_prices,
+        raw_news,
+        clean_ticker,
     )
-    
+    if provider_errors:
+        market_movement["provider_errors"] = provider_errors
+
+    prompt = (
+        "You are a market risk analyst. Analyze company fundamentals, news sentiment, "
+        "and measured price reactions around the supplied news events. Treat event "
+        "returns as evidence of association, not proof that a headline caused a move. "
+        "Base the market psychology and bull/bear cases on the measured reactions when "
+        "they are available.\n\n"
+        f"Asset: {clean_ticker}\n\n"
+        f"--- FUNDAMENTALS ---\n{str(raw_fundamentals)[:12000]}\n\n"
+        f"--- NEWS ---\n{str(raw_news)[:12000]}\n\n"
+        f"--- NEWS-TO-PRICE MOVEMENT ---\n{str(market_movement)[:10000]}"
+    )
+
+    data_is_partial = bool(provider_errors)
+    analysis_status = "partial" if data_is_partial else "complete"
+    analysis_error = "; ".join(provider_errors) or None
     try:
         response = await ai_client.aio.models.generate_content(
             model="gemini-2.5-flash",
@@ -148,78 +218,53 @@ async def run_market_pipeline(
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=MarketAnalysis,
-            )
+            ),
         )
+        if response.parsed is None:
+            raise ValueError("Gemini returned no structured analysis.")
         ai_analysis: MarketAnalysis = response.parsed
-
-    #except Exception as ai_error:
-        #print(f"⚠️ AI Synthesis Failed for {clean_ticker}: {str(ai_error)}")
-        # Generate a safe, structured fallback so the app doesn't crash
-        #ai_analysis = MarketAnalysis(
-            #aggregate_sentiment="DATA UNAVAILABLE",
-            #average_sentiment_score=0.0,
-            #consensus_risk_level="UNKNOWN",
-            #accounting_perspective="AI processing failed. Unable to synthesize fundamentals at this time.",
-            #market_psychology_perspective="AI processing failed. Unable to synthesize news sentiment.",
-            #key_news_sources=[],
-            #the_bull_case="Analysis temporarily unavailable.",
-            #the_bear_case="Analysis temporarily unavailable."
-        #)
-    except Exception as ai_error:
-        print(f"⚠️ Gemini Failed for {clean_ticker}: {str(ai_error)}")
-        print(f"🦙 Attempting Ollama llama3.1 fallback...")
+    except Exception as gemini_error:
+        gemini_message = f"Gemini failed: {gemini_error}"
+        analysis_error = "; ".join(filter(None, [analysis_error, gemini_message]))
+        print(f"Gemini failed for {clean_ticker}: {gemini_error}")
+        print("Attempting Ollama llama3.1 fallback...")
         try:
             ollama_response = await asyncio.to_thread(
-                lambda: __import__('ollama').generate(
+                lambda: __import__("ollama").generate(
                     model="llama3.1",
-                    prompt=prompt + "\n\nRespond ONLY in valid JSON matching this structure: {aggregate_sentiment, average_sentiment_score (0.0-1.0), consensus_risk_level, accounting_perspective, market_psychology_perspective, key_news_sources (list), the_bull_case, the_bear_case}",
+                    prompt=(
+                        prompt + "\n\nRespond only with valid JSON matching: "
+                        "{aggregate_sentiment, average_sentiment_score (0.0-1.0), "
+                        "consensus_risk_level, accounting_perspective, "
+                        "market_psychology_perspective, key_news_sources (list), "
+                        "the_bull_case, the_bear_case}"
+                    ),
                 )
             )
-            import json
-            raw_text = ollama_response['response']
-            clean_json = raw_text[raw_text.find('{'):raw_text.rfind('}')+1]
-            parsed = json.loads(clean_json)
-            ai_analysis = MarketAnalysis(**parsed)
-            print(f"✅ Ollama fallback succeeded for {clean_ticker}")
+            raw_text = ollama_response["response"]
+            clean_json = raw_text[raw_text.find("{") : raw_text.rfind("}") + 1]
+            ai_analysis = MarketAnalysis(**json.loads(clean_json))
+            analysis_status = "partial" if data_is_partial else "fallback"
         except Exception as ollama_error:
-            print(f"⚠️ Ollama fallback also failed: {str(ollama_error)}")
-            ai_analysis = MarketAnalysis(
-                aggregate_sentiment="DATA UNAVAILABLE",
-                average_sentiment_score=0.0,
-                consensus_risk_level="UNKNOWN",
-                accounting_perspective="AI processing failed. Unable to synthesize fundamentals at this time.",
-                market_psychology_perspective="AI processing failed. Unable to synthesize news sentiment.",
-                key_news_sources=[],
-                the_bull_case="Analysis temporarily unavailable.",
-                the_bear_case="Analysis temporarily unavailable."
-            )
+            analysis_status = "unavailable"
+            analysis_error += f"; Ollama failed: {ollama_error}"
+            print(f"Ollama fallback also failed: {ollama_error}")
+            ai_analysis = build_unavailable_analysis()
 
-    # =================================================================
-    # PHASE 3: DATABASE MAPPING & PERSISTENCE
-    # =================================================================
     pipeline_data = {
         "ticker": clean_ticker,
         "aggregate_sentiment": ai_analysis.aggregate_sentiment,
         "average_sentiment_score": ai_analysis.average_sentiment_score,
-        
-		"accounting_perspective": ai_analysis.accounting_perspective,
+        "accounting_perspective": ai_analysis.accounting_perspective,
         "market_psychology_perspective": ai_analysis.market_psychology_perspective,
-        
-		"key_news_sources": ai_analysis.key_news_sources,
-        
-		"accounting_source_url": f"https://www.sec.gov/cgi-bin/browse-edgar?CIK={clean_ticker}&action=getcompany",
-        
+        "key_news_sources": ai_analysis.key_news_sources,
         "the_bull_case": ai_analysis.the_bull_case,
         "the_bear_case": ai_analysis.the_bear_case,
         "consensus_risk_level": ai_analysis.consensus_risk_level,
-        # Persist both sets of raw data for your own debugging/frontend needs
+        "market_movement": market_movement,
+        "analysis_status": analysis_status,
+        "analysis_error": analysis_error,
         "raw_source_meta": [raw_fundamentals, raw_news],
-        "fetched_at": datetime.now(timezone.utc)
+        "fetched_at": datetime.now(timezone.utc),
     }
-    db_record = StockConsensus(**pipeline_data)
-    session.add(db_record)
-
-    session.commit()
-    session.refresh(db_record)
-    
-    return db_record
+    return _store_record(session, pipeline_data, existing_record)
