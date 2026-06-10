@@ -14,6 +14,7 @@ services:
       - MOCK_EXTERNAL_APIs=${MOCK_EXTERNAL_APIs:-false}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY}
+      - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:3000}
 
   frontend:
     container_name: sentinel-frontend
@@ -27,4 +28,4 @@ services:
       - ./frontend/src:/app/src
       - ./frontend/postcss.config.mjs:/app/postcss.config.mjs
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - BACKEND_INTERNAL_URL=http://backend:8000
