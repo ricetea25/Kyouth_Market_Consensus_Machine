@@ -66,15 +66,26 @@ Create the root `.env` file from the provided template:
 cp .env.example .env
 ```
 
-Add your free-tier API keys:
+Add your free-tier API keys and optional local-AI fallback settings:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
 ALPHA_VANTAGE_API_KEY=your_alpha_vantage_api_key
 MOCK_EXTERNAL_APIS=false
+OLLAMA_HOST=http://host.docker.internal:11434
+OLLAMA_MODEL=qwen2.5:7b
 ```
 
-Set `MOCK_EXTERNAL_APIS=true` when you want to demo the UI without spending API requests. Do not commit `.env`; it is ignored by Git.
+Set `MOCK_EXTERNAL_APIS=true` when you want to demo the UI without spending API requests.
+
+For the local fallback, install Ollama on the host, then pull and serve Qwen:
+
+```bash
+ollama pull qwen2.5:7b
+ollama serve
+```
+
+The backend calls Ollama only when Gemini fails. `OLLAMA_HOST` uses `host.docker.internal` because the backend runs inside Docker. Do not commit `.env`; it is ignored by Git.
 
 ## Start The App
 
@@ -155,7 +166,7 @@ Stopping or rebuilding the containers does not delete this database because it l
 The application is intentionally conservative with free-tier calls:
 
 - Complete analyses are cached for 24 hours.
-- Successful local-AI fallback analyses are cached for 24 hours.
+- Successful Qwen fallback analyses are cached for 24 hours.
 - Partial analyses, such as rate-limited news or missing price data, are cached for 1 hour.
 - Unavailable analyses are not cached.
 - Concurrent requests for the same ticker share one pipeline execution in the current backend process.
@@ -168,8 +179,8 @@ Each record includes an `analysis_status`:
 
 - `complete`: all expected provider data and Gemini synthesis succeeded.
 - `partial`: one or more provider inputs were unavailable or rate-limited.
-- `fallback`: provider data succeeded, but Ollama generated the synthesis after Gemini failed.
-- `unavailable`: both AI synthesis paths failed; a neutral placeholder was stored.
+- `fallback`: provider data succeeded, but Qwen generated the synthesis through Ollama after Gemini failed.
+- `unavailable`: both Gemini and the Qwen fallback failed; a neutral placeholder was stored.
 
 Provider and synthesis errors are retained in `analysis_error` for debugging.
 

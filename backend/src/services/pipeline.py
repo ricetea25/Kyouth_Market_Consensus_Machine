@@ -1,5 +1,3 @@
-import asyncio
-import json
 import os
 import re
 from datetime import datetime, timezone
@@ -7,6 +5,7 @@ from typing import Any
 
 from google import genai
 from google.genai import types
+from ollama import AsyncClient
 from sqlmodel import Session
 
 from src.config import settings
@@ -20,7 +19,21 @@ from src.services.market_movement import build_market_movement
 
 
 ai_client = genai.Client(api_key=settings.gemini_api_key)
+ollama_client = AsyncClient(host=settings.ollama_host)
 TICKER_PATTERN = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
+
+
+async def _generate_qwen_analysis(prompt: str) -> MarketAnalysis:
+    response = await ollama_client.generate(
+        model=settings.ollama_model,
+        prompt=(
+            prompt + "\n\nReturn only the requested structured analysis. "
+            "Do not invent facts that are absent from the supplied evidence."
+        ),
+        format=MarketAnalysis.model_json_schema(),
+        options={"temperature": 0.1},
+    )
+    return MarketAnalysis.model_validate_json(response.response)
 
 
 def _store_record(
@@ -148,28 +161,16 @@ async def run_market_pipeline(
         gemini_message = f"Gemini failed: {gemini_error}"
         analysis_error = "; ".join(filter(None, [analysis_error, gemini_message]))
         print(f"Gemini failed for {clean_ticker}: {gemini_error}")
-        print("Attempting Ollama llama3.1 fallback...")
+        print(f"Attempting Ollama {settings.ollama_model} fallback...")
         try:
-            ollama_response = await asyncio.to_thread(
-                lambda: __import__("ollama").generate(
-                    model="llama3.1",
-                    prompt=(
-                        prompt + "\n\nRespond only with valid JSON matching: "
-                        "{aggregate_sentiment, average_sentiment_score (0.0-1.0), confidence_score (0.0-1.0), "
-                        "consensus_risk_level, accounting_perspective, "
-                        "market_psychology_perspective, "
-                        "the_bull_case, the_bear_case}"
-                    ),
-                )
-            )
-            raw_text = ollama_response["response"]
-            clean_json = raw_text[raw_text.find("{") : raw_text.rfind("}") + 1]
-            ai_analysis = MarketAnalysis(**json.loads(clean_json))
+            ai_analysis = await _generate_qwen_analysis(prompt)
             analysis_status = "partial" if data_is_partial else "fallback"
-        except Exception as ollama_error:
+        except Exception as qwen_error:
             analysis_status = "unavailable"
-            analysis_error += f"; Ollama failed: {ollama_error}"
-            print(f"Ollama fallback also failed: {ollama_error}")
+            analysis_error = "; ".join(
+                filter(None, [analysis_error, f"Qwen failed: {qwen_error}"])
+            )
+            print(f"Qwen fallback failed for {clean_ticker}: {qwen_error}")
             ai_analysis = build_unavailable_analysis()
 
     pipeline_data = {

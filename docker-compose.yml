@@ -15,6 +15,10 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:3000}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   frontend:
     container_name: sentinel-frontend
